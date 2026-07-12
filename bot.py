@@ -7335,12 +7335,5 @@ async def main():
     ]
     await bot.set_my_commands(commands)
     
-    logging.info("🤖 Карточный бот успешно перезапущен (Полный апдейт")
-      await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    logging.info("🤖 Карточный бот успешно перезапущен (Полный апдейт
 
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Бот остановлен.")
