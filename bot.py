@@ -3804,7 +3804,7 @@ async def cb_sp_view(callback: types.CallbackQuery):
             chance_pct = (w / total_w) * 100 if total_w > 0 else 0
             text += f"  {idx}. {c['name']} (~{chance_pct:.2f}%)\n"
             
-   kb = []
+    kb = []
     if mode == "shop":
         bal = user['coins']
         val_sym = "💰"
