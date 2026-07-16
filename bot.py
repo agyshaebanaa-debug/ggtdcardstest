@@ -3891,10 +3891,15 @@ async def cb_sp_view(callback: types.CallbackQuery):
         user_pack = await fetch_one("SELECT count FROM user_seed_packs WHERE user_id = ? AND pack_id = ?", (user_id, pack_id))
         amount = user_pack['count'] if user_pack else 0
         text += f"\nУ вас есть: <b>{amount} шт.</b>\n"
-        if amount > 0:kb.append([InlineKeyboardButton(text="📦 Открыть x1", callback_data=f"sp_open_{pack_id}_1")])
+        
+        # === ИСПРАВЛЕННЫЙ БЛОК ОТСТУПОВ ===
+        if amount > 0:
+            kb.append([InlineKeyboardButton(text="📦 Открыть x1", callback_data=f"sp_open_{pack_id}_1")])
             if amount >= 5:
                 kb.append([InlineKeyboardButton(text="📦 Открыть x5", callback_data=f"sp_open_{pack_id}_5")])
             kb.append([InlineKeyboardButton(text="📦 Открыть ВСЕ", callback_data=f"sp_open_{pack_id}_all")])
+        # ==================================
+        
         kb.append([InlineKeyboardButton(text="🔙 Назад в инвентарь", callback_data="sp_inv_back")])
 
     try: await callback.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
