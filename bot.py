@@ -6947,4 +6947,220 @@ async def adm_usr_give_user(message: types.Message, state: FSMContext):
         await message.answer("❌ ID должен быть числом.")
 
 @dp.callback_query(F.data.startswith("give_c_page_"), GiveCard.card_id)
-async def adm_give_paginate(callback: types.CallbackQuery,
+async def adm_give_paginate(callback: types.CallbackQuery, state: FSMContext):
+    page = int(callback.data.split("_")[3])
+    data = await state.get_data()
+    kb = get_pagination_keyboard(data.get('give_items', []), page, "give_c", columns=1, items_per_page=8)
+    await callback.message.edit_reply_markup(reply_markup=kb)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("give_c_"), GiveCard.card_id)
+async def adm_give_select(callback: types.CallbackQuery, state: FSMContext):
+    if "page" in callback.data: return
+    card_id = int(callback.data.split("_")[2])
+    await state.update_data(give_card_id=card_id)
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚪ Обычная", callback_data="give_mut_Normal")],
+        [InlineKeyboardButton(text="⭐ Золотая", callback_data="give_mut_Gold")],
+        [InlineKeyboardButton(text="💎 Алмазная", callback_data="give_mut_Diamond")],
+        [InlineKeyboardButton(text="🌈 Радужная", callback_data="give_mut_Rainbow")]
+    ])
+    await callback.message.edit_text("Выберите мутацию для карты:", reply_markup=kb)
+    await state.set_state(GiveCard.mutation)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("give_mut_"), GiveCard.mutation)
+async def adm_give_mut_select(callback: types.CallbackQuery, state: FSMContext):
+    mutation = callback.data.split("_")[2]
+    await state.update_data(give_mutation=mutation)
+    
+    await callback.message.edit_text("Введите СЕРИЙНЫЙ НОМЕР для карты (от 1 до 9999) или введите 0, чтобы выдать строго БЕЗ номера:")
+    await state.set_state(GiveCard.custom_serial)
+    await callback.answer()
+
+@dp.message(GiveCard.custom_serial)
+async def adm_give_serial_save(message: types.Message, state: FSMContext):
+    try:
+        serial = int(message.text)
+        if serial < 0 or serial > 9999: raise ValueError
+        
+        data = await state.get_data()
+        user_id = data.get('give_user_id')
+        card_id = data.get('give_card_id')
+        mutation = data.get('give_mutation')
+        
+        if serial == 0:
+            db = await get_db_connection()
+            try:
+                res = await db.execute("SELECT id FROM inventory WHERE user_id = ? AND card_id = ? AND mutation = ? AND serial_number = 0 AND signed_by = 0", (user_id, card_id, mutation))
+                inv_item = await res.fetchone()
+                if inv_item:
+                    await db.execute("UPDATE inventory SET count = count + 1 WHERE id = ?", (inv_item['id'],))
+                else:
+                    await db.execute("INSERT INTO inventory (user_id, card_id, count, mutation, serial_number, signed_by) VALUES (?, ?, 1, ?, 0, 0)", (user_id, card_id, mutation))
+                await db.commit()
+            finally:
+                await db.close()
+            assigned_serial = 0
+        else:
+            _, assigned_serial, _ = await give_card_to_user(user_id, card_id, mutation, custom_serial=serial)
+            
+        s_str = f" [#{assigned_serial:04d}]" if assigned_serial > 0 else ""
+        await log_admin(message.from_user.id, f"GAVE card ID {card_id} (Mut:{mutation}, Serial:{assigned_serial}) to User {user_id}")
+        await message.answer(f"✅ Карта (ID {card_id}) успешно выдана игроку {user_id}!\nМутация: {mutation}{s_str}")
+        await state.clear()
+    except ValueError:
+        await message.answer("❌ Введите число от 0 до 9999.")
+
+@dp.callback_query(F.data == "adm_usr_takecard")
+async def adm_usr_take_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer("Введите ID игрока, у которого хотим забрать карту (удалить):")
+    await state.set_state(TakeCard.user_id)
+    await callback.answer()
+
+@dp.message(TakeCard.user_id)
+async def adm_usr_take_user(message: types.Message, state: FSMContext):
+    try:
+        uid = int(message.text)
+        await state.update_data(take_user_id=uid)
+        
+        inv = await fetch_all("""
+            SELECT i.id as inv_id, c.name, c.rarity, i.count, i.mutation, i.serial_number 
+            FROM inventory i JOIN cards c ON i.card_id = c.id 
+            WHERE i.user_id = ? AND i.count > 0
+        """, (uid,))
+        
+        if not inv:
+            return await message.answer("У этого пользователя пустой инвентарь или нет карт.")
+            
+        items = []
+        for c in inv:
+            mut_str = "⭐" if c['mutation'] == 'Gold' else ("💎" if c['mutation'] == 'Diamond' else ("🌈" if c['mutation'] == 'Rainbow' else "⚪"))
+            ser_str = f" [#{c['serial_number']:04d}]" if c['serial_number'] > 0 else ""
+            items.append({"id": c['inv_id'], "btn_text": f"{mut_str} {c['name']}{ser_str} (x{c['count']})"})
+            
+        await state.update_data(take_items=items)
+        kb = get_pagination_keyboard(items, 0, "take_c", columns=1, items_per_page=8)
+        await message.answer("Выберите карту для изъятия:", reply_markup=kb)
+        await state.set_state(TakeCard.inv_id)
+    except:
+        await message.answer("❌ ID должен быть числом.")
+
+@dp.callback_query(F.data.startswith("take_c_page_"), TakeCard.inv_id)
+async def adm_take_paginate(callback: types.CallbackQuery, state: FSMContext):
+    page = int(callback.data.split("_")[3])
+    data = await state.get_data()
+    kb = get_pagination_keyboard(data.get('take_items', []), page, "take_c", columns=1, items_per_page=8)
+    await callback.message.edit_reply_markup(reply_markup=kb)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("take_c_"), TakeCard.inv_id)
+async def adm_take_select(callback: types.CallbackQuery, state: FSMContext):
+    if "page" in callback.data: return
+    inv_id = int(callback.data.split("_")[2])
+    await state.update_data(take_inv_id=inv_id)
+    
+    await callback.message.edit_text("Сколько штук удалить? (Введите число или 'all' для удаления всех копий):")
+    await state.set_state(TakeCard.amount)
+    await callback.answer()
+
+@dp.message(TakeCard.amount)
+async def adm_take_amount(message: types.Message, state: FSMContext):
+    amt_str = message.text.lower()
+    data = await state.get_data()
+    uid = data['take_user_id']
+    inv_id = data['take_inv_id']
+    
+    inv_item = await fetch_one("SELECT count FROM inventory WHERE id = ? AND user_id = ?", (inv_id, uid))
+    if not inv_item:
+        await message.answer("Ошибка: карта не найдена в инвентаре.")
+        return await state.clear()
+        
+    count_have = inv_item['count']
+    if amt_str == 'all':
+        amt = count_have
+    else:
+        try:
+            amt = int(amt_str)
+            if amt <= 0: raise ValueError
+        except:
+            return await message.answer("Введите корректное число больше 0 или 'all'.")
+            
+    if amt > count_have:
+        amt = count_have
+        
+    if amt == count_have:
+        await execute_db("DELETE FROM inventory WHERE id = ?", (inv_id,))
+        for slot in ['equip1', 'equip2', 'equip3', 'equip4', 'equip5']:
+            await execute_db(f"UPDATE users SET {slot} = 0 WHERE id = ? AND {slot} = ?", (uid, inv_id))
+    else:
+        await execute_db("UPDATE inventory SET count = count - ? WHERE id = ?", (amt, inv_id))
+        
+    await log_admin(message.from_user.id, f"Изъял карту inv_id {inv_id} в кол-ве {amt} у {uid}")
+    await message.answer(f"✅ Успешно удалено {amt} шт. карты из инвентаря пользователя {uid}.")
+    await state.clear()
+
+@dp.callback_query(F.data == "adm_usr_ban")
+async def adm_usr_ban_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer("Отправь ID игрока для смены статуса бана (если забанен - разбанит):")
+    await state.set_state(AdminBan.user_id)
+    await callback.answer()
+
+@dp.message(AdminBan.user_id)
+async def adm_usr_ban_finish(message: types.Message, state: FSMContext):
+    try:
+        uid = int(message.text)
+        usr = await fetch_one("SELECT banned FROM users WHERE id = ?", (uid,))
+        if not usr: return await message.answer("Игрок не найден.")
+        new_st = 0 if usr['banned'] == 1 else 1
+        await execute_db("UPDATE users SET banned = ? WHERE id = ?", (new_st, uid))
+        await log_admin(message.from_user.id, f"Set BAN status to {new_st} for {uid}")
+        await message.answer(f"✅ Статус бана изменен на {new_st}.")
+    except:
+        pass
+    await state.clear()
+
+async def main():
+    await check_and_update_schema()
+    
+    shop_exists = await fetch_all("SELECT * FROM shop_items")
+    if not shop_exists: await restock_shop()
+    
+    settings = await fetch_one("SELECT last_lb_reward FROM server_settings WHERE id = 1")
+    if settings and settings['last_lb_reward'] == 0:
+        await execute_db("UPDATE server_settings SET last_lb_reward = ? WHERE id = 1", (time.time(),))
+    
+    asyncio.create_task(shop_auto_restock_task())
+    asyncio.create_task(leaderboard_rewards_task())
+    asyncio.create_task(trade_timeout_task())
+    asyncio.create_task(auto_backup_db())
+    
+    commands = [
+        BotCommand(command="start", description="Главное меню / Main Menu"),
+        BotCommand(command="updatelog", description="История обновлений / Updates"),
+        BotCommand(command="donate", description="Магазин Доната / Donate Shop"),
+        BotCommand(command="help", description="Огромное руководство / Guide"),
+        BotCommand(command="getcard", description="Выбить карту / Draw Card"),
+        BotCommand(command="shop", description="Магазин / Shop"),
+        BotCommand(command="inventory", description="Инвентарь / Inventory"),
+        BotCommand(command="equip", description="Экипировка колоды / Equip Deck"),
+        BotCommand(command="craft", description="Мастерская Крафта / Crafting"),
+        BotCommand(command="profile", description="Профиль и статы / Profile & Stats"),
+        BotCommand(command="trade", description="Обменяться картами / Trade Cards"),
+        BotCommand(command="quests", description="Квесты / Quests"),
+        BotCommand(command="index", description="Индекс всех карт / Card Index"),
+        BotCommand(command="top", description="Рейтинг игроков / Leaderboard"),
+        BotCommand(command="codereward", description="Активировать код / Redeem Code")
+    ]
+    await bot.set_my_commands(commands)
+    
+    logging.info("🤖 Карточный бот успешно перезапущен (Полный апдейт: Diamond Мутация, Донат Юниты, ИИ Бан)!")
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Бот остановлен.")
