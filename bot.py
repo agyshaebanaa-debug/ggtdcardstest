@@ -32,7 +32,7 @@ import aiosqlite
 # ========================================================================
 # КОНФИГУРАЦИЯ БОТА
 # ========================================================================
-BOT_TOKEN = "8887633400:AAEvlERe0CN1twoc01jGxYzSi8f9Kbwck1A"
+BOT_TOKEN = "7725898870:AAGWJxQSpNOF1GDtw3XaNM93MzE6WJZrxms"
 SUPER_ADMIN_ID = 5341904332
 DB_NAME = "cards_database.db"
 
@@ -3810,7 +3810,7 @@ async def execute_trade_fixed(trade_id):
     db = await get_db_connection()
     try:
         await db.execute("BEGIN")
-       async def transfer_items(from_u, to_u, offer):
+        async def transfer_items(from_u, to_u, offer):
             for i_id, qty in offer.items():
                 cur = await db.execute("SELECT card_id, mutation, serial_number, signed_by, count, is_football FROM inventory WHERE id = ?", (i_id,))
                 row = await cur.fetchone()
@@ -7004,6 +7004,7 @@ async def main():
     
     commands = [
         BotCommand(command="start", description="Главное меню / Main Menu"),
+        BotCommand(command="donate", description="Донат и Привилегии / Donate"),
         BotCommand(command="updatelog", description="История обновлений / Updates"),
         BotCommand(command="help", description="Огромное руководство / Guide"),
         BotCommand(command="getcard", description="Выбить карту / Draw Card"),
@@ -7016,7 +7017,6 @@ async def main():
         BotCommand(command="quests", description="Квесты / Quests"),
         BotCommand(command="index", description="Индекс всех карт / Card Index"),
         BotCommand(command="top", description="Рейтинг игроков / Leaderboard"),
-        BotCommand(command="donate", description="Донат и Привилегии / Donate"),
         BotCommand(command="codereward", description="Активировать код / Redeem Code")
     ]
     await bot.set_my_commands(commands)
