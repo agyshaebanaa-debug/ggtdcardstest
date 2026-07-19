@@ -6761,4 +6761,272 @@ async def cb_ucraft_execute(callback: types.CallbackQuery):
         for inv_id, qty in to_delete.items():
             row = await db.execute("SELECT count FROM inventory WHERE id = ? AND user_id = ?", (inv_id, user_id))
             r = await row.fetchone()
-            if not r or r['count'] <
+            if not r or r['count'] < qty:
+                raise ValueError(f"Not enough cards")
+                
+        for inv_id, qty in to_delete.items():
+            row = await db.execute("SELECT count FROM inventory WHERE id = ?", (inv_id,))
+            r = await row.fetchone()
+            if r['count'] == qty:
+                await db.execute("DELETE FROM inventory WHERE id = ?", (inv_id,))
+                for s in ['equip1', 'equip2', 'equip3', 'equip4', 'equip5']:
+                    await db.execute(f"UPDATE users SET {s} = 0 WHERE id = ? AND {s} = ?", (user_id, inv_id))
+            else:
+                await db.execute("UPDATE inventory SET count = count - ? WHERE id = ?", (qty, inv_id))
+                
+        await db.execute("UPDATE users SET coins = coins - ? WHERE id = ?", (recipe['price'], user_id))
+        await db.commit()
+    except ValueError:
+        await db.execute("ROLLBACK")
+        return await callback.answer("❌ Ошибка: Выбраны несуществующие или уже потраченные карты.", show_alert=True)
+    except Exception as e:
+        await db.execute("ROLLBACK")
+        logging.error(f"Craft Error: {e}")
+        return await callback.answer("❌ Системная ошибка БД.", show_alert=True)
+    finally:
+        await db.close()
+        
+    active_craft_sessions.pop(user_id, None)
+    await add_quest_progress_new(user_id, 'q_craft', 1)
+    
+    target_card = await fetch_one("SELECT * FROM cards WHERE id = ?", (recipe['target_card_id'],))
+    
+    base_gold_chance = 20.0
+    base_diamond_chance = 10.0
+    base_rainbow_chance = 2.0
+    
+    bonus_gold = (gold_count / total_needed) * 80.0
+    bonus_diamond = (diamond_count / total_needed) * 80.0
+    bonus_rainbow = (rainbow_count / total_needed) * 80.0
+    
+    final_g = min(100.0, base_gold_chance + bonus_gold)
+    final_d = min(100.0, base_diamond_chance + bonus_diamond)
+    final_r = min(100.0, base_rainbow_chance + bonus_rainbow)
+    
+    rand_val = random.random() * 100.0
+    if rand_val < final_r: result_mut = "Rainbow"
+    elif rand_val < final_r + final_d: result_mut = "Diamond"
+    elif rand_val < final_r + final_d + final_g: result_mut = "Gold"
+    else: result_mut = "Normal"
+    
+    _, serial, _ = await give_card_to_user(user_id, target_card['id'], result_mut, target_card['rarity'], is_football=0)
+    
+    target_card['mutation'] = result_mut
+    target_card['serial_number'] = serial
+    target_card['signed_by'] = 0
+    
+    await log_user_action(user_id, f"Скрафтил {target_card['name']} (Mut: {result_mut})")
+    
+    mut_str = "💎 Бриллиантовая" if result_mut == 'Diamond' else ("🌈 Радужная" if result_mut == 'Rainbow' else ("⭐ Золотая" if result_mut == 'Gold' else "Обычная"))
+    text = f"🎉 <b>КРАФТ УСПЕШЕН!</b>\n━━━━━━━━━━━━━━━━━━━━━━━━\nВы создали: {format_card_name(target_card)}\nМутация: <b>{mut_str}</b>\n\nШансы были: Золото {final_g:.1f}%, Бриллиант {final_d:.1f}%, Радуга {final_r:.1f}%\nКарта добавлена в инвентарь!"
+    
+    try: await callback.message.delete()
+    except: pass
+    await callback.message.answer_photo(photo=target_card['photo_id'], caption=text)
+    await callback.answer()
+
+@dp.callback_query(F.data == "craft_upgrade_list")
+async def cb_craft_upgrade_list(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    invs = await fetch_all("""
+        SELECT card_id, mutation, SUM(count) as total
+        FROM inventory
+        WHERE user_id = ? AND is_football = 0 AND signed_by = 0
+        GROUP BY card_id, mutation
+        HAVING total >= 8
+    """, (user_id,))
+    
+    if not invs:
+        return await callback.answer("У вас нет 8 одинаковых копий одной мутации (без росписи) для улучшения.", show_alert=True)
+        
+    items = []
+    for r in invs:
+        if r['mutation'] == 'Rainbow': continue
+        
+        c_info = await fetch_one("SELECT name, rarity FROM cards WHERE id = ?", (r['card_id'],))
+        if not c_info: continue
+        
+        if r['mutation'] == 'Normal':
+            from_mut, to_mut = "⚪", "⭐"
+        elif r['mutation'] == 'Gold':
+            from_mut, to_mut = "⭐", "💎"
+        elif r['mutation'] == 'Diamond':
+            from_mut, to_mut = "💎", "🌈"
+        else:
+            continue
+        
+        items.append({
+            "id": f"{r['card_id']}_{r['mutation']}",
+            "btn_text": f"✨ {from_mut} {c_info['name']} ➡️ {to_mut}"
+        })
+        
+    if not items:
+        return await callback.answer("Нет доступных улучшений.", show_alert=True)
+        
+    kb = get_pagination_keyboard(items, 0, "crupgrade", columns=1, items_per_page=8)
+    kb.inline_keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="craft_menu_main")])
+    await callback.message.edit_text("✨ <b>ДОСТУПНЫЕ УЛУЧШЕНИЯ</b>\nТребуется 8 карт для слияния.", reply_markup=kb)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("crupgrade_page_"))
+async def cb_cr_upg_pag(callback: types.CallbackQuery):
+    page = int(callback.data.split("_")[2])
+    user_id = callback.from_user.id
+    invs = await fetch_all("""
+        SELECT card_id, mutation, SUM(count) as total
+        FROM inventory
+        WHERE user_id = ? AND is_football = 0 AND signed_by = 0
+        GROUP BY card_id, mutation
+        HAVING total >= 8
+    """, (user_id,))
+    
+    items = []
+    for r in invs:
+        if r['mutation'] == 'Rainbow': continue
+        c_info = await fetch_one("SELECT name, rarity FROM cards WHERE id = ?", (r['card_id'],))
+        if not c_info: continue
+        if r['mutation'] == 'Normal': from_mut, to_mut = "⚪", "⭐"
+        elif r['mutation'] == 'Gold': from_mut, to_mut = "⭐", "💎"
+        elif r['mutation'] == 'Diamond': from_mut, to_mut = "💎", "🌈"
+        else: continue
+        items.append({
+            "id": f"{r['card_id']}_{r['mutation']}",
+            "btn_text": f"✨ {from_mut} {c_info['name']} ➡️ {to_mut}"
+        })
+        
+    kb = get_pagination_keyboard(items, page, "crupgrade", columns=1, items_per_page=8)
+    kb.inline_keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="craft_menu_main")])
+    try: await callback.message.edit_reply_markup(reply_markup=kb)
+    except: pass
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("crupgrade_"))
+async def cb_cr_upg_select(callback: types.CallbackQuery):
+    if "page" in callback.data: return
+    parts = callback.data.split("_")
+    card_id = int(parts[1])
+    mutation = parts[2]
+    user_id = callback.from_user.id
+    
+    c_info = await fetch_one("SELECT name FROM cards WHERE id = ?", (card_id,))
+    
+    if mutation == 'Normal': from_mut, to_mut = "⚪ Обычная", "⭐ Золотую"
+    elif mutation == 'Gold': from_mut, to_mut = "⭐ Золотая", "💎 Бриллиантовую"
+    elif mutation == 'Diamond': from_mut, to_mut = "💎 Бриллиантовая", "🌈 Радужную"
+    else: return await callback.answer("Ошибка мутации")
+    
+    total = (await fetch_one("SELECT SUM(count) as t FROM inventory WHERE user_id = ? AND card_id = ? AND mutation = ? AND is_football = 0 AND signed_by = 0", (user_id, card_id, mutation)))['t']
+    
+    text = f"✨ <b>Улучшение: {c_info['name']}</b>\nИз {from_mut} в {to_mut}.\n\nУ вас есть: {total} шт. Требуется: 8 шт.\n"
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ ПОДТВЕРДИТЬ СЛИЯНИЕ", callback_data=f"crup_confirm_{card_id}_{mutation}")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="craft_upgrade_list")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("crup_confirm_"))
+async def cb_crup_confirm(callback: types.CallbackQuery):
+    parts = callback.data.split("_")
+    card_id = int(parts[2])
+    mutation = parts[3]
+    user_id = callback.from_user.id
+    
+    if mutation == 'Normal': to_mut = "Gold"
+    elif mutation == 'Gold': to_mut = "Diamond"
+    elif mutation == 'Diamond': to_mut = "Rainbow"
+    else: return await callback.answer("Ошибка мутации", show_alert=True)
+    
+    db = await get_db_connection()
+    try:
+        await db.execute("BEGIN EXCLUSIVE")
+        cur = await db.execute("SELECT SUM(count) as t FROM inventory WHERE user_id = ? AND card_id = ? AND mutation = ? AND is_football = 0 AND signed_by = 0", (user_id, card_id, mutation))
+        row = await cur.fetchone()
+        if not row or row['t'] is None or row['t'] < 8:
+            raise ValueError("Not enough")
+            
+        needed = 8
+        cur = await db.execute("SELECT id, count FROM inventory WHERE user_id = ? AND card_id = ? AND mutation = ? AND is_football = 0 AND signed_by = 0 ORDER BY id ASC", (user_id, card_id, mutation))
+        packs = await cur.fetchall()
+        for pack in packs:
+            if needed <= 0: break
+            take = min(needed, pack['count'])
+            if take == pack['count']:
+                await db.execute("DELETE FROM inventory WHERE id = ?", (pack['id'],))
+                for s in ['equip1', 'equip2', 'equip3', 'equip4', 'equip5']:
+                    await db.execute(f"UPDATE users SET {s} = 0 WHERE id = ? AND {s} = ?", (user_id, pack['id']))
+            else:
+                await db.execute("UPDATE inventory SET count = count - ? WHERE id = ?", (take, pack['id']))
+            needed -= take
+        await db.commit()
+    except ValueError:
+        await db.execute("ROLLBACK")
+        return await callback.answer("Ошибка слияния! Не хватает карт.", show_alert=True)
+    except Exception as e:
+        await db.execute("ROLLBACK")
+        return await callback.answer("Системная ошибка.", show_alert=True)
+    finally:
+        await db.close()
+        
+    target_card = await fetch_one("SELECT * FROM cards WHERE id = ?", (card_id,))
+    _, serial, _ = await give_card_to_user(user_id, target_card['id'], to_mut, target_card['rarity'], is_football=0)
+    
+    target_card['mutation'] = to_mut
+    target_card['serial_number'] = serial
+    target_card['signed_by'] = 0
+    
+    await log_user_action(user_id, f"Улучшил {target_card['name']} до {to_mut}")
+    await add_quest_progress_new(user_id, 'q_upgrade', 1)
+    
+    mut_str = "💎 Бриллиантовая" if to_mut == 'Diamond' else ("🌈 Радужная" if to_mut == 'Rainbow' else "⭐ Золотая")
+    text = f"🎉 <b>УЛУЧШЕНИЕ УСПЕШНО!</b>\n━━━━━━━━━━━━━━━━━━━━━━━━\nВы получили: {format_card_name(target_card)}\nНовая Мутация: <b>{mut_str}</b>\n\nКарта добавлена в инвентарь!"
+    await callback.message.edit_text(text, reply_markup=None)
+    await callback.answer()
+
+# ========================================================================
+# ЗАПУСК БОТА
+# ========================================================================
+async def main():
+    await check_and_update_schema()
+    
+    shop_exists = await fetch_all("SELECT * FROM shop_items")
+    if not shop_exists: await restock_shop()
+    
+    settings = await fetch_one("SELECT last_lb_reward FROM server_settings WHERE id = 1")
+    if settings and settings['last_lb_reward'] == 0:
+        await execute_db("UPDATE server_settings SET last_lb_reward = ? WHERE id = 1", (time.time(),))
+    
+    asyncio.create_task(shop_auto_restock_task())
+    asyncio.create_task(leaderboard_rewards_task())
+    asyncio.create_task(trade_timeout_task())
+    asyncio.create_task(auto_backup_db())
+    
+    commands = [
+        BotCommand(command="start", description="Главное меню / Main Menu"),
+        BotCommand(command="updatelog", description="История обновлений / Updates"),
+        BotCommand(command="help", description="Огромное руководство / Guide"),
+        BotCommand(command="getcard", description="Выбить карту / Draw Card"),
+        BotCommand(command="shop", description="Магазин / Shop"),
+        BotCommand(command="inventory", description="Инвентарь / Inventory"),
+        BotCommand(command="equip", description="Экипировка колоды / Equip Deck"),
+        BotCommand(command="craft", description="Мастерская Крафта / Crafting"),
+        BotCommand(command="profile", description="Профиль и статы / Profile & Stats"),
+        BotCommand(command="trade", description="Обменяться картами / Trade Cards"),
+        BotCommand(command="quests", description="Квесты / Quests"),
+        BotCommand(command="index", description="Индекс всех карт / Card Index"),
+        BotCommand(command="top", description="Рейтинг игроков / Leaderboard"),
+        BotCommand(command="donate", description="Донат и Привилегии / Donate"),
+        BotCommand(command="codereward", description="Активировать код / Redeem Code")
+    ]
+    await bot.set_my_commands(commands)
+    
+    logging.info("🤖 Карточный бот успешно перезапущен (Полный апдейт: Diamond, Donate, Crazy Mode, No Cardball)!")
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Бот остановлен.")
