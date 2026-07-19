@@ -4103,7 +4103,7 @@ async def cb_sp_view(callback: types.CallbackQuery):
             chance_pct = (w / total_w) * 100 if total_w > 0 else 0
             text += f"  {idx}. {c['name']} (~{chance_pct:.2f}%)\n"
             
-   pack_pity_rules = await fetch_all("SELECT * FROM pack_pity WHERE pack_id = ?", (pack_id,))
+    pack_pity_rules = await fetch_all("SELECT * FROM pack_pity WHERE pack_id = ?", (pack_id,))
     if pack_pity_rules:
         text += "\n🌟 <b>Гаранты (PITY):</b>\n"
         for rule in pack_pity_rules:
