@@ -6594,11 +6594,13 @@ async def cb_crup_confirm(callback: types.CallbackQuery):
     await callback.message.edit_text(text, reply_markup=None)
     await callback.answer()
 
+# ... existing code ...
 # ========================================================================
 # WEB APP BACKEND API (FASTAPI)
 # ========================================================================
-from fastapi import FastAPI, Depends, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import uvicorn
 
 app = FastAPI(title="GGTD Cards Mini App API")
@@ -6610,6 +6612,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+class RequestModel(BaseModel):
+    user_id: int
+    item_id: int = None
+    difficulty: str = None
+    recipe_id: int = None
 
 @app.get("/api/user/{user_id}")
 async def api_get_user(user_id: int):
@@ -6632,31 +6640,190 @@ async def api_get_equipped(user_id: int):
     if not user: return {"error": "User not found"}
     return {"equipped": user}
 
+@app.get("/api/index")
+async def api_get_index():
+    cards = await fetch_all("SELECT id, name, rarity, class_type, drop_chance FROM cards WHERE rarity != 'Secret' AND hide_in_index = 0")
+    for c in cards:
+        exist_row = await fetch_one("SELECT SUM(count) as c FROM inventory WHERE card_id = ? AND user_id != ?", (c['id'], SUPER_ADMIN_ID))
+        c['global_exists'] = exist_row['c'] if exist_row and exist_row['c'] else 0
+    return {"cards": cards}
+
+@app.get("/api/top/{category}")
+async def api_get_top(category: str):
+    if category == 'trophies':
+        top = await fetch_all("SELECT first_name as name, trophies as score FROM users WHERE id != ? ORDER BY trophies DESC LIMIT 20", (SUPER_ADMIN_ID,))
+    elif category == 'coins':
+        top = await fetch_all("SELECT first_name as name, total_coins as score FROM users WHERE id != ? ORDER BY total_coins DESC LIMIT 20", (SUPER_ADMIN_ID,))
+    else:
+        top = await fetch_all("""
+            SELECT u.first_name as name, SUM(i.count) as score 
+            FROM users u JOIN inventory i ON u.id = i.user_id 
+            WHERE u.id != ? GROUP BY u.id ORDER BY score DESC LIMIT 20
+        """, (SUPER_ADMIN_ID,))
+    return {"top": top}
+
+@app.get("/api/shop")
+async def api_get_shop():
+    items = await fetch_all("SELECT * FROM shop_items WHERE stock > 0")
+    return {"items": items}
+
+@app.get("/api/craft")
+async def api_get_craft():
+    recipes = await fetch_all("SELECT id, target_card_id, price FROM craft_recipes")
+    for r in recipes:
+        t_card = await fetch_one("SELECT name FROM cards WHERE id = ?", (r['target_card_id'],))
+        r['name'] = t_card['name'] if t_card else "Unknown"
+        ings = await fetch_all("SELECT i.card_id, i.amount, c.name FROM craft_ingredients i JOIN cards c ON i.card_id = c.id WHERE i.recipe_id = ?", (r['id'],))
+        r['ingredients'] = ings
+    return {"recipes": recipes}
+
+@app.get("/api/quests/{user_id}")
+async def api_get_quests(user_id: int):
+    await generate_dynamic_quests(user_id)
+    quests = await fetch_one("SELECT * FROM user_dynamic_quests WHERE user_id = ?", (user_id,))
+    return {"quests": quests}
+
+@app.post("/api/gacha")
+async def api_post_gacha(req: RequestModel):
+    user = await fetch_one("SELECT * FROM users WHERE id = ?", (req.user_id,))
+    if not user: return {"error": "User not found"}
+    
+    luck_mult, cd_mult = await get_active_events()
+    actual_cooldown = int((3 * 60) / cd_mult)
+    now = time.time()
+    passed = now - user['last_getcard']
+    
+    if passed < actual_cooldown:
+        return {"error": f"Кулдаун! Ждите {int(actual_cooldown - passed)} сек."}
+        
+    won_list = await give_multiple_cards(req.user_id, 1)
+    if not won_list: return {"error": "База карт пуста."}
+    
+    await execute_db("UPDATE users SET last_getcard = ? WHERE id = ?", (now, req.user_id))
+    await add_quest_progress_new(req.user_id, 'q_open', 1)
+    
+    return {"success": True, "card": won_list[0]}
+
+@app.post("/api/shop/buy")
+async def api_post_shop_buy(req: RequestModel):
+    user = await fetch_one("SELECT coins FROM users WHERE id = ?", (req.user_id,))
+    item = await fetch_one("SELECT * FROM shop_items WHERE id = ?", (req.item_id,))
+    
+    if not item or item['stock'] <= 0: return {"error": "Товар закончился"}
+    if user['coins'] < item['price']: return {"error": "Недостаточно шекелей"}
+    
+    await execute_db("UPDATE users SET coins = coins - ? WHERE id = ?", (item['price'], req.user_id))
+    await execute_db("UPDATE shop_items SET stock = stock - 1 WHERE id = ?", (req.item_id,))
+    
+    # Упрощенная выдача для API (если это пак)
+    if item['item_type'].endswith("_rnd"):
+        count = int(item['item_type'].split("_")[0])
+        await give_multiple_cards(req.user_id, count)
+        
+    return {"success": True}
+
+@app.post("/api/craft/execute")
+async def api_post_craft_execute(req: RequestModel):
+    # Упрощенный API крафт (без проверки сложных мутаций, использует обычные карты с начала списка)
+    recipe = await fetch_one("SELECT target_card_id, price FROM craft_recipes WHERE id = ?", (req.recipe_id,))
+    ingredients = await fetch_all("SELECT card_id, amount FROM craft_ingredients WHERE recipe_id = ?", (req.recipe_id,))
+    user = await fetch_one("SELECT coins FROM users WHERE id = ?", (req.user_id,))
+    
+    if user['coins'] < recipe['price']: return {"error": "Недостаточно шекелей"}
+    
+    db = await get_db_connection()
+    try:
+        await db.execute("BEGIN EXCLUSIVE")
+        for ing in ingredients:
+            cur = await db.execute("SELECT SUM(count) as t FROM inventory WHERE user_id = ? AND card_id = ?", (req.user_id, ing['card_id']))
+            r = await cur.fetchone()
+            if not r or r['t'] is None or r['t'] < ing['amount']:
+                raise ValueError("Not enough items")
+                
+            needed = ing['amount']
+            invs = await db.execute("SELECT id, count FROM inventory WHERE user_id = ? AND card_id = ? ORDER BY count DESC", (req.user_id, ing['card_id']))
+            for pack in await invs.fetchall():
+                if needed <= 0: break
+                take = min(needed, pack['count'])
+                if take == pack['count']: await db.execute("DELETE FROM inventory WHERE id = ?", (pack['id'],))
+                else: await db.execute("UPDATE inventory SET count = count - ? WHERE id = ?", (take, pack['id']))
+                needed -= take
+                
+        await db.execute("UPDATE users SET coins = coins - ? WHERE id = ?", (recipe['price'], req.user_id))
+        await db.commit()
+    except ValueError:
+        await db.execute("ROLLBACK")
+        return {"error": "Не хватает ингредиентов!"}
+    except Exception as e:
+        await db.execute("ROLLBACK")
+        return {"error": str(e)}
+    finally:
+        await db.close()
+        
+    target_card = await fetch_one("SELECT * FROM cards WHERE id = ?", (recipe['target_card_id'],))
+    _, serial, _ = await give_card_to_user(req.user_id, target_card['id'], 'Normal', target_card['rarity'])
+    target_card['mutation'] = 'Normal'
+    return {"success": True, "card": target_card}
+
+@app.post("/api/pve_quick")
+async def api_post_pve_quick(req: RequestModel):
+    user = await fetch_one("SELECT * FROM users WHERE id = ?", (req.user_id,))
+    t1 = await get_team_data(req.user_id)
+    if not t1: return {"error": "Колода пуста!"}
+    
+    rank = await get_user_rank(user['trophies'])
+    power_mult = 1.0; trophies_scale = 1.0; 
+    diff_type = req.difficulty or "med"
+    if diff_type == "easy": power_mult = 0.7; trophies_scale = 0.5
+    elif diff_type == "hard": power_mult = 1.5; trophies_scale = 1.4
+    elif diff_type == "nightmare": power_mult = 1.9; trophies_scale = 1.8
+    elif diff_type == "crazy": power_mult = 2.5; trophies_scale = 2.5
+        
+    t2 = await get_bot_team(req.user_id, rank['difficulty_mult'] * power_mult, rank['name'], diff_type)
+    
+    # Симуляция авто-боя в памяти для API
+    log = []
+    apply_boosters(t1, "Игрок", log, None)
+    apply_boosters(t2, "ИИ", log, None)
+    
+    turn = 1
+    winner = None
+    while turn < 20:
+        t1_a = [c for c in t1 if c['hp'] > 0]
+        t2_a = [c for c in t2 if c['hp'] > 0]
+        if not t1_a and not t2_a: winner = "Draw"; break
+        elif not t1_a: winner = "AI"; break
+        elif not t2_a: winner = "Player"; break
+        
+        await process_turn_effects(t1, "Игрок", log, None)
+        await execute_turn(t1, t2, "Игрок", "ИИ", log, None)
+        if not [c for c in t2 if c['hp'] > 0]: winner = "Player"; break
+        
+        await process_turn_effects(t2, "ИИ", log, None)
+        await execute_turn(t2, t1, "ИИ", "Игрок", log, None)
+        if not [c for c in t1 if c['hp'] > 0]: winner = "AI"; break
+        turn += 1
+        
+    if not winner: winner = "Draw"
+    
+    rewards = {"coins": 0, "trophies": 0}
+    if winner == "Player":
+        coins_base = random.randint(25, 90) * rank['reward_mult'] * trophies_scale * 0.85
+        coins_won = int(coins_base)
+        won_t = await get_dynamic_trophies(rank['name'], rank['rank_idx'], trophies_scale)
+        await execute_db("UPDATE users SET coins = coins + ?, trophies = trophies + ? WHERE id = ?", (coins_won, won_t, req.user_id))
+        rewards = {"coins": coins_won, "trophies": won_t}
+    elif winner == "AI":
+        lost_t = 2
+        await execute_db("UPDATE users SET trophies = MAX(0, trophies - ?) WHERE id = ?", (lost_t, req.user_id))
+        rewards = {"trophies": -lost_t}
+
+    return {"success": True, "winner": winner, "log": log, "rewards": rewards}
+
 async def start_fastapi():
     config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
     server = uvicorn.Server(config)
     await server.serve()
-
-# ========================================================================
-# MAIN LOOP
-# ========================================================================
-async def main():
-    await check_and_update_schema()
-    
-    shop_exists = await fetch_all("SELECT * FROM shop_items")
-    if not shop_exists: await restock_shop()
-    
-    settings = await fetch_one("SELECT last_lb_reward FROM server_settings WHERE id = 1")
-    if settings and settings['last_lb_reward'] == 0:
-        await execute_db("UPDATE server_settings SET last_lb_reward = ? WHERE id = 1", (time.time(),))
-    
-    asyncio.create_task(shop_auto_restock_task())
-    asyncio.create_task(leaderboard_rewards_task())
-    asyncio.create_task(trade_timeout_task())
-    asyncio.create_task(auto_backup_db())
-    
-    # Запускаем FastAPI параллельно с aiogram
-    asyncio.create_task(start_fastapi())
     
     commands = [
         BotCommand(command="start", description="Главное меню / Main Menu"),
