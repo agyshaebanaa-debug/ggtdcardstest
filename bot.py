@@ -3813,7 +3813,7 @@ async def callback_trade_accept(callback: types.CallbackQuery):
     }
     
     active_trades[trade_id] = trade
-   user_trades[p1_id] = trade_id
+    user_trades[p1_id] = trade_id
     user_trades[p2_id] = trade_id
     
     await log_user_action(p2_id, f"Принял запрос на трейд от {p1_id}")
