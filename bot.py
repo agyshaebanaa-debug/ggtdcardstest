@@ -3668,7 +3668,8 @@ async def run_pvp_dual_broadcast(p1_id: int, p2_id: int, p1_name: str, p2_name: 
         battle_start_time = time.time()
         log1 = []
         log2 = []
-  apply_boosters(t2, p2_name, log1, log2)
+        apply_boosters(t1, p1_name, log1, log2)
+        apply_boosters(t2, p2_name, log1, log2)
         
         if log1:
             header1 = build_battle_header(p1_name, t1, p2_name, t2) + "\n".join(log1)
