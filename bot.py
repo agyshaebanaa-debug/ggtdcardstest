@@ -1,3 +1,4 @@
+# STREAMING_CHUNK: Importing modules...
 import asyncio
 import logging
 import random
@@ -30,10 +31,8 @@ except ImportError:
 
 import aiosqlite
 
-# ========================================================================
-# КОНФИГУРАЦИЯ БОТА
-# ========================================================================
-BOT_TOKEN = "8924641990:AAFDstV6btEbDsa4_5lH7Ph0m1jT2eP-aNA"
+# STREAMING_CHUNK: Initializing bot and constants...
+BOT_TOKEN = "8953052039:AAEIYQI69yLHMRxLIUTVmmQvxxJlaJAw8hU"
 SUPER_ADMIN_ID = 5341904332
 DB_NAME = "cards_database.db"
 
@@ -45,9 +44,6 @@ bot = Bot(
 )
 dp = Dispatcher()
 
-# ========================================================================
-# КОНСТАНТЫ И СЛОВАРИ С ЭМОДЗИ
-# ========================================================================
 RARITY_COLORS = {
     "Basic": "gray",
     "Uncommon": "green",
@@ -98,6 +94,7 @@ RARITY_WEIGHT = {
     "Basic": 1
 }
 
+# STREAMING_CHUNK: Setting up global variables...
 active_combats = set()
 active_trades = {}  
 user_trades = {}    
@@ -162,9 +159,7 @@ BTN_ADM = "⚙️ Админ-панель"
 BTN_CRAFT = "🔨 Крафт"
 BTN_DRAFT = "🃏 Драфт-Арена"
 
-# ========================================================================
-# БАЗА ДАННЫХ И СМАРТ-МИГРАЦИИ
-# ========================================================================
+# STREAMING_CHUNK: Database and migrations...
 async def get_db_connection():
     db = await aiosqlite.connect(DB_NAME)
     db.row_factory = aiosqlite.Row
@@ -315,6 +310,7 @@ async def check_and_update_schema():
         
         await db.execute("UPDATE cards SET rarity = 'Super' WHERE rarity IN ('Godly')")
         
+        # STREAMING_CHUNK: Setting up ranks table...
         await db.execute("""
             CREATE TABLE IF NOT EXISTS ranks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -375,6 +371,7 @@ async def check_and_update_schema():
         try: await db.execute("ALTER TABLE seed_packs ADD COLUMN currency_type TEXT DEFAULT 'shekels'")
         except aiosqlite.OperationalError: pass
         
+        # STREAMING_CHUNK: Setting up user and shop tables...
         await db.execute("""
             CREATE TABLE IF NOT EXISTS seed_pack_cards (
                 pack_id INTEGER,
@@ -449,6 +446,7 @@ async def check_and_update_schema():
             )
         """)
 
+        # STREAMING_CHUNK: Setting up Crafting and Draft tables...
         await db.execute("""
             CREATE TABLE IF NOT EXISTS craft_recipes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -500,6 +498,7 @@ async def log_user_action(user_id: int, action: str):
 # ========================================================================
 # FSM СОСТОЯНИЯ
 # ========================================================================
+# STREAMING_CHUNK: Defining State Machines...
 class AddCard(StatesGroup):
     photo = State()
     name = State()
@@ -637,6 +636,7 @@ class FakeCall:
 # ========================================================================
 # УТИЛИТЫ И ХЕЛПЕРЫ ДЛЯ UI
 # ========================================================================
+# STREAMING_CHUNK: Adding UI utility functions...
 def get_display_name(user_data: dict) -> str:
     if user_data.get('username'): 
         return html.escape(f"@{user_data['username']}")
@@ -645,15 +645,12 @@ def get_display_name(user_data: dict) -> str:
     return f"Player {user_data.get('id', '???')}"
 
 async def get_user_titles_str(user_id: int) -> str:
-    titles = []
-    user = await fetch_one("SELECT vip_status, active_title FROM users WHERE id = ?", (user_id,))
-    if user and user.get('active_title'):
-        titles.append(f"<b>{user['active_title']}</b>")
-    else:
-        if user and user.get('vip_status'): titles.append("💎 VIP")
-        if await is_admin(user_id): titles.append("👑 Администратор")
-        if await is_signer(user_id): titles.append("✍️ Сигнер")
-    if titles: return f" [<i>{', '.join(titles)}</i>]"
+    user = await fetch_one("SELECT active_title FROM users WHERE id = ?", (user_id,))
+    if not user or not user.get('active_title'):
+        return ""
+    titles = [t.strip() for t in user['active_title'].split(',') if t.strip()]
+    if titles:
+        return f" [<i>{', '.join(titles)}</i>]"
     return ""
 
 def make_progress_bar(current, total, length=10):
@@ -808,6 +805,7 @@ def get_main_keyboard(is_adm: bool = False, is_sgn: bool = False):
         
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
+# STREAMING_CHUNK: Implementing luck and mutation helpers...
 async def get_user_rank(trophies: int):
     ranks = await fetch_all("SELECT * FROM ranks ORDER BY min_trophies DESC")
     for idx, r in enumerate(ranks):
@@ -1017,6 +1015,7 @@ async def get_card_sources(card_id: int) -> str:
 # ========================================================================
 # ЛОГИКА ШАНСОВ И МАГАЗИНА И PITY
 # ========================================================================
+# STREAMING_CHUNK: Setting up the global shop and gacha system...
 async def calculate_chance_weights(luck_mult: float = 1.0, user_luck: float = 1.0):
     query = """
         SELECT * FROM cards 
@@ -1206,8 +1205,10 @@ async def auto_backup_db():
 # ========================================================================
 # ОСНОВНЫЕ КОМАНДЫ ПОЛЬЗОВАТЕЛЯ И НАСТРОЙКИ
 # ========================================================================
+# STREAMING_CHUNK: Registering User Menus...
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
     if await check_ban(message.from_user.id): return
     await execute_db(
         "INSERT OR IGNORE INTO users (id, username, first_name) VALUES (?, ?, ?)", 
@@ -1266,24 +1267,30 @@ async def cmd_help(message: types.Message):
         "Добро пожаловать в карточную арену! Ниже описаны все основные механики нашего бота:\n\n"
         "⚔️ <b>ОСНОВНОЙ РЕЖИМ БОЯ (PvE и PvP)</b>\n"
         "• Вы можете собрать боевую колоду из 4-х карт. Для этого выбивайте карты в Гаче или покупайте в магазине.\n"
-        "• В боях против ИИ (ботов) вы получаете <b>Шекели 💰</b>, кубки и опыт БП.\n\n"
-        "🃏 <b>ДРАФТ АРЕНА (Новое!)</b>\n"
-        "• Платите 5000 Шекелей, собираете случайную колоду на выбор и бьетесь против колод других игроков!\n"
-        "• Больше побед = круче лут!\n\n"
+        "• Бой проходит в автоматическом или полуавтоматическом режиме (если включены модификаторы в Настройках).\n"
+        "• В боях против ИИ (ботов) вы получаете <b>Шекели 💰</b>, кубки и опыт БП. Награды зависят от выбранной сложности.\n"
+        "• <b>PvP Дуэли</b> позволяют сразиться с друзьями дружеской дуэлью (без изменения рейтинга и наград) или через автоподбор за кубки.\n\n"
         "💎 <b>РЕДКОСТИ И МУТАЦИИ КАРТ</b>\n"
-        "• ⭐ <b>Золотая мутация</b> (+10%)\n"
-        "• 💎 <b>Алмазная мутация</b> (+25%)\n"
-        "• 🌈 <b>Радужная мутация</b> (+40%)\n\n"
+        "Каждая карта имеет свою редкость и может выпасть с особой мутацией:\n"
+        "⚪ Basic | 🟢 Uncommon | 🔵 Rare | 🟣 Epic | 🟡 Legendary | 🔴 Mythic | 🌈 Super | 🌸 Exclusive | 👑 Leaderboard\n"
+        "• ⭐ <b>Золотая мутация</b> (+10% к характеристикам)\n"
+        "• 💎 <b>Алмазная мутация</b> (+25% к характеристикам)\n"
+        "• 🌈 <b>Радужная мутация</b> (+40% к характеристикам)\n\n"
         "⚡ <b>СИСТЕМА ГАРАНТИЙ (PITY)</b>\n"
+        "• При открытии карт из обычной гачи вы застрахованы от неудач:\n"
         "└ Гарантированный <b>Мифик 🔴</b>: каждые 1000 открытий.\n"
         "└ Гарантированный <b>Супер 🌈</b>: каждые 10000 открытий.\n\n"
+        "🔨 <b>МАСТЕРСКАЯ КРАФТА И СЛИЯНИЕ</b>\n"
+        "• В меню Крафта вы можете создавать новые мощные карты по рецептам, вкладывая обычные копии.\n"
+        "• Вы также можете слить одинаковые карты одной мутации, чтобы гарантированно повысить их уровень (до золотой или радужной)!\n\n"
         "🎟 <b>БАТЛ-ПАСС (СЕЗОНЫ)</b>\n"
-        "Получайте опыт БП за бои. Повышайте уровень и забирайте награды!\n\n"
+        "• Получайте опыт БП за бои. Повышайте уровень и забирайте эксклюзивные награды, шекели и Сид-Паки!\n\n"
         "🤝 <b>СИСТЕМА ОБМЕНА (ТРЕЙДЫ)</b>\n"
-        "Используйте команду <code>/trade [ID/username]</code> для безопасного обмена.\n\n"
+        "• Используйте команду <code>/trade [ID/username]</code>, чтобы начать безопасный обмен картами с другим игроком в реальном времени!\n\n"
         "📞 <b>КОНТАКТЫ И СВЯЗЬ:</b>\n"
-        "• 📰 Новости: @ggtdcardsnews\n"
-        "• 💬 Чат: @ggtdcards_support\n"
+        "• 📰 Новости и обновления: @ggtdcardsnews\n"
+        "• 💬 Наш чат поддержки: @ggtdcards_support\n"
+        "• 📧 Email для предложений: ggtdcards@gmail.com\n"
     )
     await message.answer(guide)
 
@@ -1317,7 +1324,6 @@ async def cb_donate_menu(callback: types.CallbackQuery):
         except: pass
         
     elif section == "f2p":
-        # Update 5.0 Gamepasses
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="129 R$ = Навсегда Х2 Шекели", callback_data="buy_f2p_shekels")],
             [InlineKeyboardButton(text="159 R$ = Навсегда Х2 Опыт БП", callback_data="buy_f2p_bpxp")],
@@ -1408,9 +1414,7 @@ async def cb_buy_rs(callback: types.CallbackQuery):
     await callback.answer(f"✅ Вы купили {amount} R$!", show_alert=True)
     await cb_donate_menu(callback.model_copy(update={"data": "don_buy_rs"}))
 
-# ========================================================================
-# НАСТРОЙКИ, ТИТУЛЫ И СКОРОСТЬ
-# ========================================================================
+# STREAMING_CHUNK: Setting up titles and configurations...
 @dp.message(F.text == BTN_SET)
 async def cmd_settings(message: types.Message):
     if await check_ban(message.from_user.id): return
@@ -1420,7 +1424,7 @@ async def cmd_settings(message: types.Message):
     text = "⚙️ <b>НАСТРОЙКИ АККАУНТА</b>\n━━━━━━━━━━━━━━━━━━━━━━━━"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏱ Скорость боев", callback_data="set_speed_menu")],
-        [InlineKeyboardButton(text="👑 Выбрать Титул", callback_data="set_title_menu")],
+        [InlineKeyboardButton(text="👑 Выбрать Титулы", callback_data="set_title_menu")],
         [InlineKeyboardButton(text="🛒 Фильтр Магазина", callback_data="set_shop_filters")],
         [InlineKeyboardButton(text="🧬 Модификаторы боя (PvE)", callback_data="set_modifiers")],
         [InlineKeyboardButton(text=f"🎉 Ивенты: {'🔔 Вкл' if user['notif_events'] else '🔕 Выкл'}", callback_data="set_toggle_events")],
@@ -1434,26 +1438,46 @@ async def cb_title_menu(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     user = await fetch_one("SELECT * FROM users WHERE id = ?", (user_id,))
     
-    titles = [("Без титула (Стандартный)", "")]
-    if user.get('vip_status'): titles.append(("💎 VIP", "💎 VIP"))
-    if await is_admin(user_id): titles.append(("👑 Администратор", "👑 Администратор"))
-    if await is_signer(user_id): titles.append(("✍️ Сигнер", "✍️ Сигнер"))
-    if user.get('title_detective'): titles.append(("🕵️ Детектив", "🕵️ Детектив"))
+    active_titles = [t.strip() for t in user.get('active_title', '').split(',') if t.strip()]
+    
+    available_titles = []
+    if user.get('vip_status'): available_titles.append("💎 VIP")
+    if await is_admin(user_id): available_titles.append("👑 Администратор")
+    if await is_signer(user_id): available_titles.append("✍️ Сигнер")
+    if user.get('title_detective'): available_titles.append("🕵️ Детектив")
     
     kb_btns = []
-    for name, val in titles:
-        status = "✅" if user.get('active_title') == val else ""
-        kb_btns.append([InlineKeyboardButton(text=f"{name} {status}", callback_data=f"set_title_val_{val}")])
+    for val in available_titles:
+        status = "✅" if val in active_titles else ""
+        kb_btns.append([InlineKeyboardButton(text=f"{val} {status}", callback_data=f"set_title_val_{val}")])
+        
+    kb_btns.append([InlineKeyboardButton(text="🧹 Снять все титулы", callback_data="set_title_clear")])
     kb_btns.append([InlineKeyboardButton(text="🔙 Назад", callback_data="set_main")])
     
-    try: await callback.message.edit_text("👑 <b>ВЫБОР ТИТУЛА</b>\nВыберите титул для отображения в профиле и боях:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_btns))
+    try: await callback.message.edit_text("👑 <b>ВЫБОР ТИТУЛА</b>\nВыберите титулы для отображения в профиле и боях (можно выбрать несколько):", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_btns))
     except: pass
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("set_title_val_"))
 async def cb_title_val(callback: types.CallbackQuery):
     val = callback.data.replace("set_title_val_", "")
-    await execute_db("UPDATE users SET active_title = ? WHERE id = ?", (val, callback.from_user.id))
+    user_id = callback.from_user.id
+    user = await fetch_one("SELECT active_title FROM users WHERE id = ?", (user_id,))
+    
+    active_titles = [t.strip() for t in user.get('active_title', '').split(',') if t.strip()]
+    
+    if val in active_titles:
+        active_titles.remove(val)
+    else:
+        active_titles.append(val)
+        
+    new_val = ",".join(active_titles)
+    await execute_db("UPDATE users SET active_title = ? WHERE id = ?", (new_val, user_id))
+    await cb_title_menu(callback)
+    
+@dp.callback_query(F.data == "set_title_clear")
+async def cb_title_clear(callback: types.CallbackQuery):
+    await execute_db("UPDATE users SET active_title = '' WHERE id = ?", (callback.from_user.id,))
     await cb_title_menu(callback)
 
 @dp.callback_query(F.data == "set_speed_menu")
@@ -1484,7 +1508,7 @@ async def cb_speed_set(callback: types.CallbackQuery):
             if member.status not in ["member", "administrator", "creator"]:
                 return await callback.answer("❌ Для x1.5 нужно подписаться на @ggtdcardsnews!", show_alert=True)
         except TelegramBadRequest:
-            pass # Если бот не админ, разрешим
+            pass 
     elif spd == 2.0:
         user = await fetch_one("SELECT perm_x2_battle_speed FROM users WHERE id=?", (user_id,))
         if not user.get('perm_x2_battle_speed'):
@@ -1575,9 +1599,6 @@ async def cb_set_main(callback: types.CallbackQuery):
     except: pass
     await callback.answer()
 
-# ========================================================================
-# ПРОФИЛЬ
-# ========================================================================
 @dp.message(Command("profile"), F.chat.type == "private")
 @dp.message(F.text == BTN_PROF)
 async def cmd_profile(message: types.Message):
@@ -1801,7 +1822,7 @@ async def cmd_shop(message: types.Message):
     bal_r = user.get('r_bucks', 0)
     discount = 0.9 if user.get('vip_status') else 1.0
     
-    text = f"🛒 <b>ГЛОБАЛЬМАГАЗИН</b>\n💰 Твой баланс: <b>{bal_c} Шекелей</b> | 💎 <b>{bal_r} R$</b>\n<i>(Товары общие для всех. Кто успел, тот и купил!)</i>\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    text = f"🛒 <b>ГЛОБАЛЬНЫЙ МАГАЗИН</b>\n💰 Твой баланс: <b>{bal_c} Шекелей</b> | 💎 <b>{bal_r} R$</b>\n<i>(Товары общие для всех. Кто успел, тот и купил!)</i>\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
     if discount < 1.0:
         text += "💎 <b>У вас активна VIP-скидка 10% (на шекели)!</b>\n\n"
         
@@ -1938,6 +1959,7 @@ async def callback_buy_shop(callback: types.CallbackQuery):
 # ========================================================================
 # СИСТЕМА ГАЧИ (ВЫБИВАНИЕ КАРТ) И МУТАЦИИ
 # ========================================================================
+# STREAMING_CHUNK: Gacha logic...
 @dp.message(Command("getcard"))
 @dp.message(F.text == BTN_DRAW)
 async def cmd_getcard(message: types.Message):
@@ -2128,6 +2150,7 @@ async def callback_index_page(callback: types.CallbackQuery):
 # ========================================================================
 # ИНВЕНТАРЬ
 # ========================================================================
+# STREAMING_CHUNK: Inventory display...
 async def get_inventory_text_and_kb(user_id: int, page: int = 0, items_per_page: int = 30):
     inv = await fetch_all("""
         SELECT c.id as card_id, c.name, c.rarity, c.class_type, i.id as inv_id, i.count, i.mutation, i.serial_number, i.signed_by, u.username, u.first_name
@@ -2281,6 +2304,7 @@ async def cb_sign_card_select(callback: types.CallbackQuery):
 # ========================================================================
 # ЭКИПИРОВКА (ДО 5 СЛОТОВ)
 # ========================================================================
+# STREAMING_CHUNK: Equipping cards logic...
 def get_equip_main_keyboard(user_info, cards_info):
     kb = []
     slots = ['equip1', 'equip2', 'equip3', 'equip4']
@@ -2439,7 +2463,6 @@ async def equip_var_select(callback: types.CallbackQuery, state: FSMContext):
         if any(c['card_id'] == card_info['card_id'] for c in other_cards):
             return await callback.answer("❌ Нельзя надеть две одинаковые карты!", show_alert=True)
             
-        # Update 5.0 Restriction Check for Boosters
         if card_info['class_type'] == 'Booster' and not user.get('perm_2_boosters'):
             booster_count = sum(1 for c in other_cards if c['class_type'] == 'Booster')
             if booster_count >= 1:
@@ -2454,6 +2477,7 @@ async def equip_var_select(callback: types.CallbackQuery, state: FSMContext):
 # ========================================================================
 # БАТЛ-ПАСС
 # ========================================================================
+# STREAMING_CHUNK: Setting up battlepass handlers...
 @dp.message(F.text == BTN_BP)
 async def cmd_battle_passes(message: types.Message):
     if await check_ban(message.from_user.id): return
@@ -2641,6 +2665,7 @@ async def callback_bp_claim_fixed(callback: types.CallbackQuery):
 # ========================================================================
 # БОЕВОЙ ДВИЖОК
 # ========================================================================
+# STREAMING_CHUNK: Battle Engine Logic...
 async def get_team_data(user_id: int):
     user = await fetch_one("SELECT * FROM users WHERE id = ?", (user_id,))
     team = []
@@ -2995,7 +3020,7 @@ async def add_bp_xp(user_id: int, xp_to_add: int) -> tuple:
     finally:
         await db.close()
 
-# --- ЛОГИКА РУЧНОГО БОЯ ---
+# STREAMING_CHUNK: Manual battle UI...
 async def player_manual_turn(chat_id, p1_id, t1, t2):
     t1_alive = [c for c in t1 if c['hp'] > 0]
     t2_alive = [c for c in t2 if c['hp'] > 0]
@@ -3088,8 +3113,6 @@ async def do_player_turn_wrapper(chat_id, p1_id, p1_name, p2_name, t1, t2, log, 
         did_turn, heals = await execute_turn(t1, t2, p1_name, p2_name, log, None, crit_chance=crit_chance)
     return did_turn, heals
 
-# -----------------------------
-# КНОПКА СДАТЬСЯ
 @dp.callback_query(F.data.startswith("surrender_battle_"))
 async def cb_surrender_battle_fixed(callback: types.CallbackQuery):
     battle_id = callback.data.split("_")[2]
@@ -3124,6 +3147,7 @@ async def safe_edit_text(msg, text, reply_markup=None):
         else:
             raise e
 
+# STREAMING_CHUNK: Running main Battle loop...
 async def run_battle_loop(bot: Bot, chat_id: int, p1_id: int, p1_name: str, p2_id: int, p2_name: str, t1: list, t2: list, diff_trophies_scale: float = 1.0, diff_bp_mult: float = 1.0, is_pvp: bool = False, pvp_no_rewards: bool = False, mods=None, diff_type: str = "med", speed_mult: float = 1.0, draft_data=None):
     battle_id = f"bt_{p1_id}_{int(time.time())}"
     surrendered_players.discard((p1_id, battle_id))
@@ -3403,7 +3427,6 @@ async def cmd_pve_select(message: types.Message):
     team1 = await get_team_data(message.from_user.id)
     if not team1: return await message.answer("❌ Боевая колода пуста!")
     
-    # Anti-spam logic Update 5.0
     user = await fetch_one("SELECT pve_menu_msg_id FROM users WHERE id = ?", (message.from_user.id,))
     if user and user.get('pve_menu_msg_id'):
         try:
@@ -3645,7 +3668,6 @@ async def run_pvp_dual_broadcast(p1_id: int, p2_id: int, p1_name: str, p2_name: 
         battle_start_time = time.time()
         log1 = []
         log2 = []
-        apply_boosters(t1, p1_name, log1, log2)
         apply_boosters(t2, p2_name, log1, log2)
         
         if log1:
@@ -6300,6 +6322,7 @@ async def cb_craft_recipes_pag(callback: types.CallbackQuery):
     except: pass
     await callback.answer()
 
+# STREAMING_CHUNK: Fixed render user craft UI logic...
 async def render_user_craft_ui(msg_or_call, user_id, recipe_id):
     recipe = await fetch_one("SELECT target_card_id, price FROM craft_recipes WHERE id = ?", (recipe_id,))
     target_card = await fetch_one("SELECT name, photo_id, rarity FROM cards WHERE id = ?", (recipe['target_card_id'],))
@@ -6370,20 +6393,24 @@ async def render_user_craft_ui(msg_or_call, user_id, recipe_id):
     kb_btns.append([InlineKeyboardButton(text="🔙 К рецептам", callback_data="craft_recipes_list")])
     
     markup = InlineKeyboardMarkup(inline_keyboard=kb_btns)
+    
     if isinstance(msg_or_call, types.CallbackQuery):
-        try:
-            await msg_or_call.message.edit_caption(caption=text, reply_markup=markup)
-        except TelegramBadRequest:
-            try:
-                # ВАЖНО: Фикс бага с пропажей интерфейса крафта - удаляем старое сообщение и присылаем новое с фото
-                await msg_or_call.message.delete()
-            except: pass
-            await msg_or_call.message.answer_photo(photo=target_card['photo_id'], caption=text, reply_markup=markup)
-    else:
-        try:
-            await msg_or_call.delete()
+        chat_id = msg_or_call.message.chat.id
+        try: await msg_or_call.message.delete()
         except: pass
-        await msg_or_call.answer_photo(photo=target_card['photo_id'], caption=text, reply_markup=markup)
+    else:
+        chat_id = msg_or_call.chat.id
+        try: await msg_or_call.delete()
+        except: pass
+
+    try:
+        if target_card and target_card.get('photo_id'):
+            await bot.send_photo(chat_id=chat_id, photo=target_card['photo_id'], caption=text, reply_markup=markup)
+        else:
+            await bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
+    except Exception as e:
+        logging.error(f"Craft UI error: {e}")
+        await bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
 
 @dp.callback_query(F.data.startswith("craft_sources_"))
 async def cb_craft_sources(callback: types.CallbackQuery):
@@ -6397,9 +6424,6 @@ async def cb_craft_rec_select(callback: types.CallbackQuery):
     recipe_id = int(callback.data.split("_")[2])
     if callback.from_user.id in active_craft_sessions:
         active_craft_sessions.pop(callback.from_user.id)
-    # Удаляем старое текстовое сообщение перед отрисовкой нового (с фото)
-    try: await callback.message.delete()
-    except: pass
     await render_user_craft_ui(callback, callback.from_user.id, recipe_id)
     await callback.answer()
 
@@ -6560,11 +6584,10 @@ async def cb_ucraft_sel(callback: types.CallbackQuery):
             })
             
     active_craft_sessions[user_id] = session
-    # Удаляем меню выбора конкретной карты перед возвратом к меню рецепта
     try: await callback.message.delete()
     except: pass
     fake_call = callback.model_copy(update={"message": callback.message})
-    await render_user_craft_ui(fake_call.message, user_id, recipe_id)
+    await render_user_craft_ui(fake_call, user_id, recipe_id)
     await callback.answer("Добавлено!")
 
 @dp.callback_query(F.data.startswith("ucraft_execute_"))
@@ -6672,7 +6695,10 @@ async def cb_ucraft_execute(callback: types.CallbackQuery):
     
     try: await callback.message.delete()
     except: pass
-    await callback.message.answer_photo(photo=target_card['photo_id'], caption=text)
+    try:
+        await callback.message.answer_photo(photo=target_card['photo_id'], caption=text)
+    except:
+        await callback.message.answer(text)
     await callback.answer()
 
 @dp.callback_query(F.data == "craft_upgrade_list")
@@ -6836,8 +6862,8 @@ async def cb_crup_confirm(callback: types.CallbackQuery):
 # ========================================================================
 # РЕЖИМ: ДРАФТ-АРЕНА (UPDATE 5.0)
 # ========================================================================
+# STREAMING_CHUNK: Setting up Draft Arena logics...
 async def fetch_draft_rewards(wins: int, luck_mult: int, user_id: int):
-    # Генерация случайных наград для Драфта (учитывает allow drop_in_draft)
     rewards = []
     
     async def get_random_draft_card(rarities):
@@ -6889,7 +6915,6 @@ async def cmd_draft_menu(message: types.Message):
         losses = draft['losses']
         
         if losses >= 3 or wins >= 7:
-            # Завершение забега
             await execute_db("UPDATE user_drafts SET is_active = 0 WHERE user_id = ?", (user_id,))
             await execute_db("INSERT INTO draft_saved_decks (user_id, deck_json, wins, losses) VALUES (?, ?, ?, ?)", (user_id, draft['deck_json'], wins, losses))
             
@@ -6971,13 +6996,14 @@ async def cb_draft_assemble(callback: types.CallbackQuery, state: FSMContext):
         
     slot_num = len(deck) + 1
     cards_to_pull = 5 if user.get('perm_draft_5_cards') else 3
-    luck_mult = 2.0 if user.get('perm_draft_2x_luck') else 1.0
     
     all_cards = await fetch_all("SELECT * FROM cards WHERE allow_in_draft = 1 AND rarity != 'Secret'")
     if not all_cards: return await callback.answer("Нет карт для драфта в БД!")
     
-    weights = [c['drop_chance'] * (luck_mult if c['drop_chance'] < 15.0 else 1.0) for c in all_cards]
-    choices = random.choices(all_cards, weights=weights, k=cards_to_pull)
+    if len(all_cards) >= cards_to_pull:
+        choices = random.sample(all_cards, cards_to_pull)
+    else:
+        choices = all_cards
     
     await state.update_data(draft_choices=choices)
     
@@ -7040,11 +7066,16 @@ async def cb_draft_pick(callback: types.CallbackQuery, state: FSMContext):
         await cb_draft_assemble(callback, state)
     else:
         await state.clear()
-        fake_call = callback.model_copy(update={"message": callback.message})
-        fake_call.message.text = BTN_DRAFT
-        await cmd_draft_menu(fake_call.message)
         try: await callback.message.delete()
         except: pass
+        
+        text = f"🃏 <b>ДРАФТ-АРЕНА (В ЗАБЕГЕ)</b>\n━━━━━━━━━━━━━━━━━━━━━━━━\n⚔️ Побед: 0/7 | 💔 Поражений: 0/3\n\nВаша колода:\n"
+        for i, c in enumerate(deck, 1):
+            m_str = "🌈 " if c.get('mutation') == 'Rainbow' else "💎 " if c.get('mutation') == 'Diamond' else ("⭐ " if c.get('mutation') == 'Gold' else "")
+            text += f"{i}. {m_str}{c['name']} (❤️{c['hp']} | ⚔️{c['damage']})\n"
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⚔️ ИСКАТЬ ПРОТИВНИКА", callback_data="draft_find_match")]])
+        await bot.send_message(callback.message.chat.id, text, reply_markup=kb)
         await callback.answer("Колода собрана!")
 
 @dp.callback_query(F.data == "draft_find_match")
@@ -7057,14 +7088,33 @@ async def cb_draft_battle(callback: types.CallbackQuery):
     
     t1 = json.loads(draft['deck_json'])
     
-    # Ищем случайную сохраненную колоду противника
     opp_decks = await fetch_all("SELECT * FROM draft_saved_decks WHERE user_id != ? ORDER BY RANDOM() LIMIT 1", (user_id,))
     
     if opp_decks:
         t2 = json.loads(opp_decks[0]['deck_json'])
         opp_name = f"Draft_Bot_{opp_decks[0]['id']}"
     else:
-        t2 = await get_bot_team(user_id, 1.2, "Silver I", diff_type="med")
+        all_draft_cards = await fetch_all("SELECT * FROM cards WHERE allow_in_draft = 1 AND rarity != 'Secret'")
+        t2 = []
+        if all_draft_cards:
+            chosen = random.sample(all_draft_cards, 4) if len(all_draft_cards) >= 4 else all_draft_cards
+            for c in chosen:
+                mut = roll_mutation()
+                mult = get_mutation_multiplier(mut)
+                c_copy = dict(c)
+                c_copy['mutation'] = mut
+                c_copy['damage'] = int(c_copy['damage'] * mult)
+                c_copy['hp'] = int(c_copy['hp'] * mult)
+                c_copy['max_hp'] = c_copy['hp']
+                c_copy['booster_dmg_mult'] = round(c_copy['booster_dmg_mult'] * mult, 2)
+                c_copy['booster_hp_mult'] = round(c_copy['booster_hp_mult'] * mult, 2)
+                c_copy['serial_number'] = 0
+                c_copy['signed_by'] = 0
+                c_copy['burn'] = 0
+                c_copy['dmg_buff'] = 0
+                c_copy['heal_power_mult'] = 1.0
+                c_copy['trauma'] = 0
+                t2.append(c_copy)
         opp_name = "Draft_AI"
         
     for c in t1: c['hp'] = c['max_hp']; c['burn'] = 0; c['dmg_buff'] = 0
@@ -7082,7 +7132,6 @@ async def cb_draft_battle(callback: types.CallbackQuery):
     
     spd_mult = user.get('setting_battle_speed', 1.0)
     
-    # Запускаем обычный движок, но передаем draft_data
     asyncio.create_task(run_battle_loop(
         bot, callback.message.chat.id, user_id, p1_name, 0, opp_name, t1, t2,
         is_pvp=False, diff_type="med", speed_mult=spd_mult, draft_data=True
@@ -7092,6 +7141,7 @@ async def cb_draft_battle(callback: types.CallbackQuery):
 # ========================================================================
 # СЕКРЕТНЫЕ КОМАНДЫ (UPDATE 5.0)
 # ========================================================================
+# STREAMING_CHUNK: Setting up Secrets and Main startup...
 @dp.message(Command("billshifr"))
 async def cmd_billshifr(message: types.Message):
     if await check_ban(message.from_user.id): return
