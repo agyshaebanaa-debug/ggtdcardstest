@@ -32,7 +32,7 @@ except ImportError:
 import aiosqlite
 
 # STREAMING_CHUNK: Initializing bot and constants...
-BOT_TOKEN = "8953052039:AAEIYQI69yLHMRxLIUTVmmQvxxJlaJAw8hU"
+BOT_TOKEN = "8924641990:AAFDstV6btEbDsa4_5lH7Ph0m1jT2eP-aNA"
 SUPER_ADMIN_ID = 5341904332
 DB_NAME = "cards_database.db"
 
