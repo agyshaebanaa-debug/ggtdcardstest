@@ -32,7 +32,7 @@ except ImportError:
 import aiosqlite
 
 # STREAMING_CHUNK: Initializing bot and constants...
-BOT_TOKEN = "8924641990:AAFDstV6btEbDsa4_5lH7Ph0m1jT2eP-aNA"
+BOT_TOKEN = "8953052039:AAEIYQI69yLHMRxLIUTVmmQvxxJlaJAw8hU"
 SUPER_ADMIN_ID = 5341904332
 DB_NAME = "cards_database.db"
 
@@ -3668,7 +3668,7 @@ async def run_pvp_dual_broadcast(p1_id: int, p2_id: int, p1_name: str, p2_name: 
         battle_start_time = time.time()
         log1 = []
         log2 = []
-        apply_boosters(t2, p2_name, log1, log2)
+       apply_boosters(t2, p2_name, log1, log2)
         
         if log1:
             header1 = build_battle_header(p1_name, t1, p2_name, t2) + "\n".join(log1)
