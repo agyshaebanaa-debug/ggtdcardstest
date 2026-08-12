@@ -127,18 +127,17 @@ QUEST_TEMPLATES = [
 ]
 
 UPDATE_LOGS = [
+    "🛠 <b>Update 5.1 (Фикс-патч):</b>\n\n"
+    "• <b>Драфт-Арена:</b> Вход теперь стоит 7500 Шекелей и требует ранг Ruby I. Скорость боя заблокирована на x1. Полный рандом карт при сборке!\n"
+    "• <b>Удача Драфта:</b> Геймпасс теперь повышает качество мутаций и редкостей (а не удваивает лут). Награды за 7 побед сбалансированы.\n"
+    "• <b>Крафт:</b> Исправлена ошибка с пропаданием интерфейса крафта.\n"
+    "• <b>Титулы:</b> Добавлена возможность надевать множество титулов одновременно.\n",
+    
     "🛠 <b>Update 5.0: Масштабное Расширение</b>\n\n"
     "• <b>Новый режим «Драфт-Арена»:</b> Собирайте случайные колоды и сражайтесь с сборками других игроков за огромные награды!\n"
     "• <b>Система Winstreak:</b> Побеждайте в режиме Crazy, копите огоньки и получайте бонусы к наградам.\n"
     "• <b>Ускорение боёв:</b> Настраивайте скорость до x2.0 для комфортной игры.\n"
     "• <b>Новые геймпассы и секреты:</b> Уникальный секретный слот в магазине, эксклюзивные титулы и предметы для настоящих ветеранов!\n",
-    
-    "🛠 <b>Update 4: Масштабный Ребаланс и Новые Механики</b>\n\n"
-    "• <b>Система Мутаций:</b> Добавлена Алмазная мутация (💎). Шансы переработаны.\n"
-    "• <b>Crazy Mode:</b> Новый сумасшедший режим в PvE с огромными наградами и секретными боссами.\n"
-    "• <b>Новые Моды:</b> Дебафф регенерации врагов и Бафф на шанс критического удара игрока.\n"
-    "• <b>Сид-Паки:</b> Добавлена покупка/открытие паков МАКСИМУМ разом. Сид-Паки теперь можно продавать за R$.\n"
-    "• <b>Фиксы:</b> Исправлена система крафта (UI и логика), 5-й слот теперь независим от VIP.\n"
 ]
 
 BTN_DRAW = "🎴 Выбить карту"
@@ -463,7 +462,6 @@ async def check_and_update_schema():
             )
         """)
         
-        # Таблицы для Режима Драфта Update 5.0
         await db.execute("""
             CREATE TABLE IF NOT EXISTS user_drafts (
                 user_id INTEGER PRIMARY KEY,
@@ -836,6 +834,13 @@ def roll_mutation():
     if r <= 0.20: return "Gold"    
     return "Normal"                
 
+def roll_draft_mutation(luck_mult=1.0):
+    r = random.random()
+    if r <= 0.01 * luck_mult: return "Rainbow"
+    if r <= 0.06 * luck_mult: return "Diamond"
+    if r <= 0.26 * luck_mult: return "Gold"
+    return "Normal"
+
 def roll_seed_pack_mutation():
     r = random.random()
     if r <= 0.01: return "Rainbow"
@@ -1048,7 +1053,6 @@ async def restock_shop():
                 spawned_any = True
                 spawned_types.add(p_id)
                 
-        # Update 5.0 Secret Slot (0.1% chance)
         if random.random() <= 0.001:
             await db.execute("INSERT INTO shop_items (item_type, name, price, stock) VALUES (?, ?, ?, ?)", 
                              ("secret_card", "🔮 Случайная Секретная Карта", 1500, 1))
@@ -2271,7 +2275,7 @@ async def cb_sign_card_select(callback: types.CallbackQuery):
         if row['count'] == 1:
             await db.execute("DELETE FROM inventory WHERE id = ?", (inv_id,))
             for slot in ['equip1', 'equip2', 'equip3', 'equip4', 'equip5']:
-                await db.execute(f"UPDATE users SET {slot} = 0 WHERE {slot} = ?", (inv_id,))
+                await db.execute(f"UPDATE users SET {s} = 0 WHERE {s} = ?", (inv_id,))
         else:
             await db.execute("UPDATE inventory SET count = count - 1 WHERE id = ?", (inv_id,))
             
@@ -3676,7 +3680,6 @@ async def run_pvp_dual_broadcast(p1_id: int, p2_id: int, p1_name: str, p2_name: 
             header2 = build_battle_header(p1_name, t1, p2_name, t2) + "\n".join(log2)
             await safe_edit_text(msg1, header1, reply_markup=get_battle_kb(battle_id))
             await safe_edit_text(msg2, header2, reply_markup=get_battle_kb(battle_id))
-            # Для PvP задержка - минимальная из двух (самый медленный темп)
             min_spd = min(spd1, spd2)
             await battle_delay(battle_id, p1_id, p2_id, speed_mult=min_spd)
 
@@ -4908,7 +4911,6 @@ async def adm_card_edit_select(callback: types.CallbackQuery, state: FSMContext)
     await state.update_data(edit_id=c_id)
     
     label_dmg = "Лечение" if card['class_type'] == "Healer" else "Урон"
-    # Update 5.0 New Drop Controls
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Имя", callback_data="edit_val_name"), InlineKeyboardButton(text="✏️ Шанс (Вес)", callback_data="edit_val_chance")],
         [InlineKeyboardButton(text=f"✏️ {label_dmg}", callback_data="edit_val_dmg"), InlineKeyboardButton(text="✏️ ХП", callback_data="edit_val_hp")],
@@ -6875,21 +6877,31 @@ async def fetch_draft_rewards(wins: int, luck_mult: int, user_id: int):
         return None
 
     if 1 <= wins <= 3:
-        for _ in range(2 * luck_mult):
-            c = await get_random_draft_card(['Rare', 'Epic'])
-            if c: rewards.append(c)
+        qty = 2
+        rarities = ['Rare', 'Epic', 'Legendary'] if luck_mult == 2 else ['Rare', 'Epic']
     elif 4 <= wins <= 6:
-        for _ in range(3 * luck_mult):
-            c = await get_random_draft_card(['Epic', 'Legendary', 'Mythic'])
-            if c: rewards.append(c)
+        qty = 3
+        rarities = ['Epic', 'Legendary', 'Mythic', 'Super'] if luck_mult == 2 else ['Epic', 'Legendary', 'Mythic']
     elif wins == 7:
-        for _ in range(4 * luck_mult):
-            c = await get_random_draft_card(['Mythic', 'Super'])
-            if c: rewards.append(c)
+        qty = 4
+        rarities = ['Mythic', 'Super'] 
+    else:
+        qty = 0
+        rarities = []
+
+    for _ in range(qty):
+        if wins == 7:
+            r = random.random()
+            super_chance = 0.25 if luck_mult == 2 else 0.10
+            target_rarity = ['Super'] if r < super_chance else ['Mythic']
+            c = await get_random_draft_card(target_rarity)
+        else:
+            c = await get_random_draft_card(rarities)
+        if c: rewards.append(c)
             
     given_cards = []
     for c in rewards:
-        mut = roll_mutation()
+        mut = roll_draft_mutation(luck_mult)
         _, serial, _ = await give_card_to_user(user_id, c['id'], mut, c['rarity'])
         c_copy = dict(c)
         c_copy['mutation'] = mut
@@ -6925,10 +6937,7 @@ async def cmd_draft_menu(message: types.Message):
             if wins == 0: sh_won = 1000
             elif 1 <= wins <= 3: sh_won = 5000
             elif 4 <= wins <= 6: sh_won = 10000; rb_won = random.randint(10, 15)
-            elif wins == 7: sh_won = 50000; rb_won = random.randint(20, 40)
-            
-            sh_won *= luck_mult
-            rb_won *= luck_mult
+            elif wins == 7: sh_won = 40000; rb_won = random.randint(15, 30)
             
             await execute_db("UPDATE users SET coins = coins + ?, total_coins = total_coins + ?, r_bucks = r_bucks + ? WHERE id = ?", (sh_won, sh_won, rb_won, user_id))
             cards_won = await fetch_draft_rewards(wins, luck_mult, user_id)
@@ -6953,19 +6962,23 @@ async def cmd_draft_menu(message: types.Message):
             kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⚔️ ИСКАТЬ ПРОТИВНИКА", callback_data="draft_find_match")]])
             return await message.answer(text, reply_markup=kb)
     else:
-        text = "🃏 <b>ДРАФТ-АРЕНА</b>\n━━━━━━━━━━━━━━━━━━━━━━━━\nСоберите случайную колоду и сражайтесь с сборками других игроков!\n\nСтоимость входа: <b>5000 💰 Шекелей</b>\nГлавный приз (7 побед): 50000 💰, R$ и Супер Карты!"
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚪 Войти за 5000 💰", callback_data="draft_enter")]])
+        text = "🃏 <b>ДРАФТ-АРЕНА</b>\n━━━━━━━━━━━━━━━━━━━━━━━━\nСоберите случайную колоду и сражайтесь с сборками других игроков!\n\nСтоимость входа: <b>7500 💰 Шекелей</b>\nТребование: <b>Ранг Ruby I 🔴</b>\nГлавный приз (7 побед): 40000 💰, 15-30 R$ и Супер Карты!"
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚪 Войти за 7500 💰", callback_data="draft_enter")]])
         await message.answer(text, reply_markup=kb)
 
 @dp.callback_query(F.data == "draft_enter")
 async def cb_draft_enter(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
-    user = await fetch_one("SELECT coins FROM users WHERE id = ?", (user_id,))
+    user = await fetch_one("SELECT coins, trophies FROM users WHERE id = ?", (user_id,))
+    rank = await get_user_rank(user['trophies'])
     
-    if user['coins'] < 5000:
-        return await callback.answer("❌ Недостаточно шекелей! Нужно 5000.", show_alert=True)
+    if rank['rank_idx'] < 20: 
+        return await callback.answer("❌ Для входа требуется ранг Ruby I или выше!", show_alert=True)
         
-    await execute_db("UPDATE users SET coins = coins - 5000 WHERE id = ?", (user_id,))
+    if user['coins'] < 7500:
+        return await callback.answer("❌ Недостаточно шекелей! Нужно 7500.", show_alert=True)
+        
+    await execute_db("UPDATE users SET coins = coins - 7500 WHERE id = ?", (user_id,))
     
     draft = await fetch_one("SELECT * FROM user_drafts WHERE user_id = ?", (user_id,))
     if draft:
@@ -7131,7 +7144,7 @@ async def cb_draft_battle(callback: types.CallbackQuery):
     try: await callback.message.edit_text("⚔️ <i>Противник найден! Подготовка арены...</i>")
     except: pass
     
-    spd_mult = user.get('setting_battle_speed', 1.0)
+    spd_mult = 1.0
     
     asyncio.create_task(run_battle_loop(
         bot, callback.message.chat.id, user_id, p1_name, 0, opp_name, t1, t2,
@@ -7198,7 +7211,7 @@ async def main():
         BotCommand(command="inventory", description="Инвентарь / Inventory"),
         BotCommand(command="equip", description="Экипировка колоды / Equip Deck"),
         BotCommand(command="craft", description="Мастерская Крафта / Crafting"),
-        BotCommand(command="draft", description="Режим Драфт-Арена / Draft Arena"),
+        BotCommand(command="draft", description="[NEW] Режим Драфт-Арена / Draft Arena"),
         BotCommand(command="profile", description="Профиль и статы / Profile & Stats"),
         BotCommand(command="trade", description="Обменяться картами / Trade Cards"),
         BotCommand(command="quests", description="Квесты / Quests"),
@@ -7207,7 +7220,7 @@ async def main():
     ]
     await bot.set_my_commands(commands)
     
-    logging.info("🤖 Карточный бот успешно перезапущен (Масштабный апдейт 5.0)!")
+    logging.info("🤖 Карточный бот успешно перезапущен (Масштабный апдейт 5.1)!")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
