@@ -1340,7 +1340,7 @@ async def cb_donate_menu(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="129 R$ = Навсегда Х1.5 Удача", callback_data="buy_f2p_luck")],
             [InlineKeyboardButton(text="339 R$ = VIP Статус", callback_data="buy_f2p_vip")],
             [InlineKeyboardButton(text="199 R$ = 5 карт на выбор в Драфте", callback_data="buy_f2p_draft5")],
-            [InlineKeyboardButton(text="249 R$ = Х2 Удача Драфта (Лут и Сборка)", callback_data="buy_f2p_draftluck")],
+            [InlineKeyboardButton(text="249 R$ = Повышение качества Драфта", callback_data="buy_f2p_draftluck")],
             [InlineKeyboardButton(text="349 R$ = 2 Бустера в экипировке", callback_data="buy_f2p_2boosters")],
             [InlineKeyboardButton(text="399 R$ = Х2 Скорость боев", callback_data="buy_f2p_speed2")],
             [InlineKeyboardButton(text="🔙 Назад", callback_data="don_main")]
@@ -1665,7 +1665,7 @@ async def cmd_profile(message: types.Message):
     if user.get('perm_1_5x_luck'): gps.append("Х1.5 Удача")
     if user.get('vip_status'): gps.append("💎 VIP")
     if user.get('perm_draft_5_cards'): gps.append("5 Карт (Драфт)")
-    if user.get('perm_draft_2x_luck'): gps.append("Х2 Удача (Драфт)")
+    if user.get('perm_draft_2x_luck'): gps.append("Повышение качества Драфта")
     if user.get('perm_2_boosters'): gps.append("2 Бустера")
     if user.get('perm_x2_battle_speed'): gps.append("Х2 Скорость")
     
@@ -1693,7 +1693,6 @@ async def cmd_profile(message: types.Message):
                 mult = mut_info[2]
                 mut_str = f" {mut_info[0]}"
                 
-                # Применяем множитель престижа к статам в профиле
                 stat_mult = PRESTIGE_CONFIG[plvl]['stats']
                 c_dict = dict(row)
                 n = format_card_name(c_dict)
@@ -2154,7 +2153,7 @@ async def cmd_index(message: types.Message):
 @dp.callback_query(F.data.startswith("idx_page_"))
 async def callback_index_page(callback: types.CallbackQuery):
     page = int(callback.data.split("_")[2])
-    text, kb = await get_index_text(callback.fromuser.id, page)
+    text, kb = await get_index_text(callback.from_user.id, page)
     await callback.message.edit_text(text, reply_markup=kb)
     await callback.answer()
 
@@ -6811,7 +6810,7 @@ async def cb_crup_confirm(callback: types.CallbackQuery):
     await callback.message.edit_text(text, reply_markup=None)
     await callback.answer()
 
-async def fetch_draft_rewards(wins: int, luck_mult: int, user_id: int):
+async def fetch_draft_rewards(wins: int, has_luck_pass: bool, user_id: int):
     rewards = []
     
     async def get_random_draft_card(rarities):
@@ -6821,18 +6820,22 @@ async def fetch_draft_rewards(wins: int, luck_mult: int, user_id: int):
         if cards: return random.choice(cards)
         return None
 
+    pull_count = 0
+    rarities_pool = []
+    
     if 1 <= wins <= 3:
-        for _ in range(2 * luck_mult):
-            c = await get_random_draft_card(['Rare', 'Epic'])
-            if c: rewards.append(c)
+        pull_count = 2
+        rarities_pool = ['Uncommon', 'Rare', 'Epic'] if has_luck_pass else ['Basic', 'Uncommon', 'Rare']
     elif 4 <= wins <= 6:
-        for _ in range(3 * luck_mult):
-            c = await get_random_draft_card(['Epic', 'Legendary', 'Mythic'])
-            if c: rewards.append(c)
+        pull_count = 3
+        rarities_pool = ['Epic', 'Legendary', 'Mythic'] if has_luck_pass else ['Rare', 'Epic', 'Legendary']
     elif wins == 7:
-        for _ in range(4 * luck_mult):
-            c = await get_random_draft_card(['Mythic', 'Super'])
-            if c: rewards.append(c)
+        pull_count = 4
+        rarities_pool = ['Mythic', 'Mythic', 'Super'] if has_luck_pass else ['Legendary', 'Mythic']
+        
+    for _ in range(pull_count):
+        c = await get_random_draft_card(rarities_pool)
+        if c: rewards.append(c)
             
     given_cards = []
     u = await fetch_one("SELECT prestige_lvl FROM users WHERE id = ?", (user_id,))
@@ -6840,6 +6843,8 @@ async def fetch_draft_rewards(wins: int, luck_mult: int, user_id: int):
     
     for c in rewards:
         mut = roll_mutation(p_lvl)
+        if has_luck_pass and mut == 'Normal' and random.random() < 0.3:
+            mut = 'Gold'
         _, serial, _ = await give_card_to_user(user_id, c['id'], mut, c['rarity'], prestige_era=p_lvl)
         c_copy = dict(c)
         c_copy['mutation'] = mut
@@ -6855,6 +6860,9 @@ async def cmd_draft_menu(message: types.Message):
     user_id = message.from_user.id
     user = await fetch_one("SELECT * FROM users WHERE id = ?", (user_id,))
     
+    if user['trophies'] < 3500:
+        return await message.answer("❌ Для входа на Драфт-Арену требуется ранг 🔴 Ruby I (3500+ кубков)!")
+    
     if user_id in active_combats or user_id in user_trades:
         return await message.answer("❌ Завершите активные бои или обмены.")
 
@@ -6869,19 +6877,16 @@ async def cmd_draft_menu(message: types.Message):
             await execute_db("UPDATE user_drafts SET is_active = 0 WHERE user_id = ?", (user_id,))
             await execute_db("INSERT INTO draft_saved_decks (user_id, deck_json, wins, losses) VALUES (?, ?, ?, ?)", (user_id, draft['deck_json'], wins, losses))
             
-            luck_mult = 2 if user.get('perm_draft_2x_luck') else 1
+            has_luck_pass = bool(user.get('perm_draft_2x_luck'))
             sh_won = 0
             rb_won = 0
-            if wins == 0: sh_won = 1000
-            elif 1 <= wins <= 3: sh_won = 5000
-            elif 4 <= wins <= 6: sh_won = 10000; rb_won = random.randint(10, 15)
-            elif wins == 7: sh_won = 50000; rb_won = random.randint(20, 40)
-            
-            sh_won *= luck_mult
-            rb_won *= luck_mult
+            if wins == 0: sh_won = 1500
+            elif 1 <= wins <= 3: sh_won = 8000
+            elif 4 <= wins <= 6: sh_won = 15000; rb_won = random.randint(5, 10)
+            elif wins == 7: sh_won = 40000; rb_won = random.randint(15, 30)
             
             await execute_db("UPDATE users SET coins = coins + ?, total_coins = total_coins + ?, r_bucks = r_bucks + ? WHERE id = ?", (sh_won, sh_won, rb_won, user_id))
-            cards_won = await fetch_draft_rewards(wins, luck_mult, user_id)
+            cards_won = await fetch_draft_rewards(wins, has_luck_pass, user_id)
             
             msg = f"🏁 <b>ЗАБЕГ ОКОНЧЕН!</b>\nПобед: <b>{wins}</b> | Поражений: <b>{losses}</b>\n\n🎁 <b>Награды:</b>\n💰 {sh_won} Шекелей"
             if rb_won > 0: msg += f"\n💎 {rb_won} R$"
@@ -6903,19 +6908,21 @@ async def cmd_draft_menu(message: types.Message):
             kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⚔️ ИСКАТЬ ПРОТИВНИКА", callback_data="draft_find_match")]])
             return await message.answer(text, reply_markup=kb)
     else:
-        text = "🃏 <b>ДРАФТ-АРЕНА</b>\n━━━━━━━━━━━━━━━━━━━━━━━━\nСоберите случайную колоду и сражайтесь с сборками других игроков!\n\nСтоимость входа: <b>5000 💰 Шекелей</b>\nГлавный приз (7 побед): 50000 💰, R$ и Супер Карты!"
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚪 Войти за 5000 💰", callback_data="draft_enter")]])
+        text = "🃏 <b>ДРАФТ-АРЕНА</b>\n━━━━━━━━━━━━━━━━━━━━━━━━\nСоберите случайную колоду и сражайтесь с сборками других игроков!\n\nСтоимость входа: <b>7500 💰 Шекелей</b>\nТребование: <b>🔴 Ruby I</b>\nГлавный приз (7 побед): 40000 💰, R$ и Мифические Карты!"
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚪 Войти за 7500 💰", callback_data="draft_enter")]])
         await message.answer(text, reply_markup=kb)
 
 @dp.callback_query(F.data == "draft_enter")
 async def cb_draft_enter(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
-    user = await fetch_one("SELECT coins FROM users WHERE id = ?", (user_id,))
+    user = await fetch_one("SELECT coins, trophies FROM users WHERE id = ?", (user_id,))
     
-    if user['coins'] < 5000:
-        return await callback.answer("❌ Недостаточно шекелей! Нужно 5000.", show_alert=True)
+    if user['trophies'] < 3500:
+        return await callback.answer("❌ Требуется ранг 🔴 Ruby I (3500+ кубков)!", show_alert=True)
+    if user['coins'] < 7500:
+        return await callback.answer("❌ Недостаточно шекелей! Нужно 7500.", show_alert=True)
         
-    await execute_db("UPDATE users SET coins = coins - 5000 WHERE id = ?", (user_id,))
+    await execute_db("UPDATE users SET coins = coins - 7500 WHERE id = ?", (user_id,))
     
     draft = await fetch_one("SELECT * FROM user_drafts WHERE user_id = ?", (user_id,))
     if draft:
@@ -6932,6 +6939,7 @@ async def cb_draft_assemble(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     user = await fetch_one("SELECT r_bucks, perm_draft_5_cards, perm_draft_2x_luck, prestige_lvl FROM users WHERE id = ?", (user_id,))
     p_lvl = user['prestige_lvl'] if user else 0
+    has_luck_pass = bool(user.get('perm_draft_2x_luck'))
     
     if callback.data == "draft_reroll":
         if user.get('r_bucks', 0) < 2:
@@ -6964,6 +6972,9 @@ async def cb_draft_assemble(callback: types.CallbackQuery, state: FSMContext):
     
     for idx, c in enumerate(choices):
         mut = roll_mutation(p_lvl) 
+        if has_luck_pass and mut == 'Normal' and random.random() < 0.4:
+            mut = 'Gold'
+            
         choices[idx]['draft_mut'] = mut
         mut_info = get_mut_info(mut)
         mult = mut_info[2]
@@ -7084,11 +7095,9 @@ async def cb_draft_battle(callback: types.CallbackQuery):
     try: await callback.message.edit_text("⚔️ <i>Противник найден! Подготовка арены...</i>")
     except: pass
     
-    spd_mult = user.get('setting_battle_speed', 1.0)
-    
     asyncio.create_task(run_battle_loop(
         bot, callback.message.chat.id, user_id, p1_name, 0, opp_name, t1, t2,
-        is_pvp=False, diff_type="med", speed_mult=spd_mult, draft_data=True
+        is_pvp=False, diff_type="med", speed_mult=1.0, draft_data=True
     ))
     await callback.answer()
 
@@ -7138,21 +7147,21 @@ async def cmd_prestige(message: types.Message):
     next_p = current_p + 1
     
     text = (
-        "⚠️ **ВНИМАНИЕ: ТОЧКА НЕВОЗВРАТА** ⚠️\n"
-        f"Вы достигли ранга 🌌 Uranium VI. Вы готовы разорвать цикл и перейти на **{next_p} Уровень Престижа**?\n\n"
-        "💀 **ЧТО БУДЕТ СБРОШЕНО И АРХИВИРОВАНО:**\n"
-        "• **Инвентарь:** Вся ваша текущая коллекция карт отправляется в 🗄 Архив (вы не сможете играть этими картами, но они сохранят свои подписи, серийные номера и статус \"Существует в мире\").\n"
-        "• **Экипировка:** Боевая колода (Слоты 1-5) будет полностью очищена.\n"
-        "• **Баланс:** Ваши Шекели (💰) обнуляются.\n"
-        "• **Рейтинг:** Кубки (🏆) и Winstreak (🔥) сбрасываются до нуля.\n"
-        "• **Гаранты (Pity):** Счетчики до гарантированного Мифика и Супер-карты обнуляются.\n"
-        "• **Активности:** Текущие забеги в Драфт-Арене и собранные там колоды аннулируются.\n\n"
-        "💎 **ЧТО ОСТАНЕТСЯ С ВАМИ НАВСЕГДА:**\n"
-        "• **Донат-валюта:** Баланс R$ (💎) сохраняется.\n"
-        "• **Геймпассы и VIP:** Купленные навсегда множители и Бустеры.\n"
-        "• **Титулы и Настройки:** Все открытые титулы, модификаторы боя и настройки логов.\n"
-        "• **Прогресс Батл-Пасса:** Ваш уровень, опыт и несобранные награды текущего сезона БП.\n"
-        "• **Статистика:** Общее количество собранных шекелей за всё время для Лидерборда.\n\n"
+        "⚠️ ВНИМАНИЕ: ТОЧКА НЕВОЗВРАТА ⚠️\n"
+        f"Вы достигли ранга 🌌 Uranium VI. Вы готовы разорвать цикл и перейти на {next_p} Уровень Престижа?\n\n"
+        "💀 ЧТО БУДЕТ СБРОШЕНО И АРХИВИРОВАНО:\n"
+        "• Инвентарь: Вся ваша текущая коллекция карт отправляется в 🗄 Архив (вы не сможете играть этими картами, но они сохранят свои подписи, серийные номера и статус \"Существует в мире\").\n"
+        "• Экипировка: Боевая колода (Слоты 1-5) будет полностью очищена.\n"
+        "• Баланс: Ваши Шекели (💰) обнуляются.\n"
+        "• Рейтинг: Кубки (🏆) и Winstreak (🔥) сбрасываются до нуля.\n"
+        "• Гаранты (Pity): Счетчики до гарантированного Мифика и Супер-карты обнуляются.\n"
+        "• Активности: Текущие забеги в Драфт-Арене и собранные там колоды аннулируются.\n\n"
+        "💎 ЧТО ОСТАНЕТСЯ С ВАМИ НАВСЕГДА:\n"
+        "• Донат-валюта: Баланс R$ (💎) сохраняется.\n"
+        "• Геймпассы и VIP: Купленные навсегда множители и Бустеры.\n"
+        "• Титулы и Настройки: Все открытые титулы, модификаторы боя и настройки логов.\n"
+        "• Прогресс Батл-Пасса: Ваш уровень, опыт и несобранные награды текущего сезона БП.\n"
+        "• Статистика: Общее количество собранных шекелей за всё время для Лидерборда.\n\n"
         "Назад пути не будет."
     )
     
@@ -7204,20 +7213,20 @@ async def cb_prestige_confirm(callback: types.CallbackQuery):
     await log_user_action(user_id, f"Совершил Вознесение до Престижа {next_p}")
     
     mut_unlocked = ""
-    if next_p == 1: mut_unlocked = "🌿 **DARK GARDEN (x1.7)**\nТеперь в гаче и Сид-Паках вам может выпасть мутация Тёмного Сада!"
-    elif next_p == 2: mut_unlocked = "🌌 **COSMIC (x2.0)**\nТеперь в гаче и Сид-Паках вам может выпасть Космическая мутация!"
-    elif next_p >= 3: mut_unlocked = "☠️ **РЕЖИМ NIGHTMARE**\nОткрыта новая экстремальная сложность для PvE сражений!"
+    if next_p == 1: mut_unlocked = "🌿 DARK GARDEN (x1.7)\nТеперь в гаче и Сид-Паках вам может выпасть мутация Тёмного Сада!"
+    elif next_p == 2: mut_unlocked = "🌌 COSMIC (x2.0)\nТеперь в гаче и Сид-Паках вам может выпасть Космическая мутация!"
+    elif next_p >= 3: mut_unlocked = "☠️ РЕЖИМ NIGHTMARE\nОткрыта новая экстремальная сложность для PvE сражений!"
 
     msg = (
-        f"🌌 **ВОЗНЕСЕНИЕ ЗАВЕРШЕНО: ПРЕСТИЖ {next_p}** 🌌\n"
+        f"🌌 ВОЗНЕСЕНИЕ ЗАВЕРШЕНО: ПРЕСТИЖ {next_p} 🌌\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🗄 Ваша старая коллекция надежно запечатана в Архиве (Эпоха {current_p}). Инвентарь очищен для новых свершений.\n\n"
-        "🧬 **ВАШИ НОВЫЕ ПЕРМАНЕНТНЫЕ СИЛЫ:**\n"
-        f"📈 **Экономика:** +{int(PRESTIGE_CONFIG[next_p]['coins_xp'] * 100 - 100)}% к получаемым Шекелям и Опыту БП во всех режимах.\n"
-        f"⚔️ **Мощь:** Базовые характеристики ВСЕХ ваших будущих активных карт навсегда увеличены на +{int(PRESTIGE_CONFIG[next_p]['stats'] * 100 - 100)}%.\n"
-        f"🔮 **Гарант (Pity):** Порог получения Мификов и Супер-карт снижен на {int(PRESTIGE_CONFIG[next_p]['pity'] * 100)}%!\n\n"
+        "🧬 ВАШИ НОВЫЕ ПЕРМАНЕНТНЫЕ СИЛЫ:\n"
+        f"📈 Экономика: +{int(PRESTIGE_CONFIG[next_p]['coins_xp'] * 100 - 100)}% к получаемым Шекелям и Опыту БП во всех режимах.\n"
+        f"⚔️ Мощь: Базовые характеристики ВСЕХ ваших будущих активных карт навсегда увеличены на +{int(PRESTIGE_CONFIG[next_p]['stats'] * 100 - 100)}%.\n"
+        f"🔮 Гарант (Pity): Порог получения Мификов и Супер-карт снижен на {int(PRESTIGE_CONFIG[next_p]['pity'] * 100)}%!\n\n"
         f"{mut_unlocked}\n\n"
-        f"🟣 **ПОЛУЧЕНО: {ess_reward} ЭССЕНЦИЙ ИСКАЖЕНИЯ**\n"
+        f"🟣 ПОЛУЧЕНО: {ess_reward} ЭССЕНЦИЙ ИСКАЖЕНИЯ\n"
         "Открыт доступ к Теневому Магазину (/shadowshop).\n\n"
         "Новая эпоха началась. Напишите /getcard, чтобы выбить свою первую карту!"
     )
@@ -7241,15 +7250,20 @@ async def cmd_shadowshop(message: types.Message):
         "🌑 **ТЕНЕВОЙ МАГАЗИН** 🌑\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🟣 Ваша Эссенция Искажения: **{ess} шт.**\n\n"
-        "Здесь можно управлять рандомом и нарушать законы архивов. Товары покупаются раз и навсегда, кроме свитков и расходников.\n"
+        "Здесь можно управлять рандомом и нарушать законы архивов.\n\n"
+        "📜 **Свиток Пробуждения (3 🟣)** — Достает 1 любую карту из Архива в активную колоду.\n"
+        "🧬 **Катализатор Эволюции (4 🟣)** — Гарантированно повышает мутацию 1 карты на уровень выше.\n"
+        "🧪 **Синтезатор Мутаций (5 🟣)** — Сжигает карту-донора и переносит её мутацию на другую карту.\n"
+        "📜 **Контракт Чёрного Рынка (8 🟣)** — Выбор 1 из 3 случайных редких карт с топ-мутациями.\n"
+        "🌌 **Аура Престижа (2 🟣)** — Уникальный эксклюзивный титул в ваш профиль.\n"
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📜 Свиток Пробуждения (3 🟣)", callback_data="shadow_awaken")],
-        [InlineKeyboardButton(text="🧬 Катализатор Эволюции (4 🟣)", callback_data="shadow_catalyst")],
-        [InlineKeyboardButton(text="🧪 Синтезатор Мутаций (5 🟣)", callback_data="shadow_synth")],
-        [InlineKeyboardButton(text="📜 Контракт Чёрного Рынка (8 🟣)", callback_data="shadow_contract")],
-        [InlineKeyboardButton(text="🌌 Аура Престижа (2 🟣)", callback_data="shadow_aura")]
+        [InlineKeyboardButton(text="📜 Свиток Пробуждения", callback_data="shadow_awaken")],
+        [InlineKeyboardButton(text="🧬 Катализатор Эволюции", callback_data="shadow_catalyst")],
+        [InlineKeyboardButton(text="🧪 Синтезатор Мутаций", callback_data="shadow_synth")],
+        [InlineKeyboardButton(text="📜 Контракт Чёрного Рынка", callback_data="shadow_contract")],
+        [InlineKeyboardButton(text="🌌 Аура Престижа", callback_data="shadow_aura")]
     ])
     
     await message.answer(text, reply_markup=kb)
@@ -7497,7 +7511,7 @@ async def cb_shad_sy_d_sel(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(shadow_synth_rec=items)
     kb = get_pagination_keyboard(items, 0, "shad_sy_r", columns=1, items_per_page=8)
     
-    await callback.message.edit_text(f"🧪 **СИНТЕЗАТОР МУТАЦИЙ (Шаг 2)**\nМутация донора: {get_mut_info(donor_card['mutation'])[0]}\nВыберите карту-ПОЛУЧАТЕЛЯ:", reply_markup=kb)
+    await callback.message.edit_text(f"🧪 **СИНТЕЗАТОР МУТАЦИЙ (Шаг 2)**\nМутация донора: {get_mut_info(donor_mut)[0]}\nВыберите карту-ПОЛУЧАТЕЛЯ:", reply_markup=kb)
     await state.set_state(ShadowShop.synth_recipient)
 
 @dp.callback_query(ShadowShop.synth_recipient, F.data.startswith("shad_sy_r_page_"))
