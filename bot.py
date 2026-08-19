@@ -30,7 +30,7 @@ except ImportError:
 
 import aiosqlite
 
-BOT_TOKEN = "8605624418:AAFkceAwqIo1F6aoaGZfyagOqdSHn83z-ww"
+BOT_TOKEN = "8953052039:AAEIYQI69yLHMRxLIUTVmmQvxxJlaJAw8hU"
 SUPER_ADMIN_ID = 5341904332
 DB_NAME = "cards_database.db"
 
